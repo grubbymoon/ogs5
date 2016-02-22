@@ -67,6 +67,11 @@ extern "C"
 extern double gravity_constant;                   // TEST, must be put in input file
 
 using namespace std;
+using namespace BHE;
+#include "BHE_Net.h"
+#include <Eigen/Dense>
+using namespace Eigen;
+
 #include "Eclipse.h"                              //BG 09/2009
 
 namespace
@@ -278,6 +283,13 @@ CFiniteElementStd:: CFiniteElementStd(CRFProcess* Pcs, const int C_Sys_Flad, con
 	case HEAT_TRANSPORT:
 		PcsType = EPT_HEAT_TRANSPORT;
 		idx0 = pcs->GetNodeValueIndex("TEMPERATURE1");
+		idx1 = idx0 + 1;
+		break;
+		
+	// case HEAT_TRANSPORT with Borehole Heat Exchangers 
+	case HEAT_TRANSPORT_BHE:
+	    PcsType = EPT_HEAT_TRANSPORT;
+		idx0 = pcs->GetNodeValueIndex("TEMPERATURE_SOIL");
 		idx1 = idx0 + 1;
 		break;
 
@@ -2192,6 +2204,9 @@ void CFiniteElementStd::CalCoefLaplace(bool Gravity, int ip)
 	CFiniteElementStd *h_fem;
 	h_fem = this;
 	double fac_perm = 1.0;
+    double lambda_solid, lambda_ice, lambda_water; // heat conductivity of solid, ice and water
+    double phi_i; // ice volume fraction
+    double sigmoid_coeff; // freezing model coefficient
 
 
 	// For nodal value interpolation
@@ -2477,6 +2492,28 @@ void CFiniteElementStd::CalCoefLaplace(bool Gravity, int ip)
 			tensor = MediaProp->HeatDispersionTensorNew(ip);
 			for(size_t i = 0; i < dim * dim; i++)
 				mat[i] = tensor[i];
+		}
+		else if (SolidProp->GetConductModel() == 7) // heat conductivity value including ice part 
+		{
+			TG = interpolate(NodalVal1); // ground temperature
+			// get heat conductivity including the ice part
+            lambda_solid = SolidProp->Heat_Conductivity(0);
+            lambda_ice = SolidProp->Heat_Conductivity(1);
+            lambda_water = SolidProp->Heat_Conductivity(2);
+			// get the porosity
+			poro = MediaProp->Porosity(Index, pcs->m_num->ls_theta);
+            // get the freezing model parameter
+            sigmoid_coeff = SolidProp->getFreezingSigmoidCoeff();
+            // get the volume fraction of ice
+            phi_i = MediaProp->CalcIceVolFrac(TG, sigmoid_coeff, poro);
+			// output the element value
+		this->pcs->SetElementValue(this->MeshElement->GetIndex(), pcs->GetElementValueIndex("PHI_I"), phi_i);
+
+  
+            mat_fac = lambda_solid*(1 - poro) + lambda_ice*phi_i + lambda_water*(poro - phi_i);
+
+			for (size_t i = 0; i < dim ; i++)
+                mat[i * dim + i] = mat_fac;
 		}
 		else
 		{
@@ -3622,6 +3659,74 @@ double CFiniteElementStd::CalCoefStrainCouping(const int phase)
 		break;
 	}
 	return val;
+}
+
+
+/***************************************************************************
+GeoSys - Funktion:
+CFiniteElementStd:: CalcMass_BHE
+Aufgabe:
+Compute mass matrix, i.e. int (N.mat.N). Linear interpolation
+for the borehole heat exchangers
+
+Programming:
+06/2014 HS
+**************************************************************************/
+void CFiniteElementStd::CalcMass_BHE(BHE::BHEAbstract * m_BHE, Eigen::MatrixXd & mass_matrix)
+{
+    int i, j;
+    // ---- Gauss integral
+    int gp_r = 0, gp_s = 0, gp_t = 0;
+    double fkt;
+    // Material
+    double mat_fac[8];
+    mat_fac[0] = mat_fac[1] = mat_fac[2] = mat_fac[3] = mat_fac[4] = mat_fac[5] = mat_fac[6] = mat_fac[7] = 0.0; 
+
+    double alpha[3], summand[8];
+
+    const std::size_t n_dim = this->ele_dim; 
+    std::size_t shift(0); 
+
+    int upwind_method = pcs->m_num->ele_upwind_method;
+    MNulleVec(alpha, 3);
+    MNulleVec(summand, 8);
+
+    ElementValue* gp_ele = ele_gp_value[Index]; //NW
+
+    //----------------------------------------------------------------------
+    //======================================================================
+    // Loop over Gauss points
+    for (gp = 0; gp < nGaussPoints; gp++)
+    {
+        //---------------------------------------------------------
+        //  Get local coordinates and weights
+        //  Compute Jacobian matrix and its determinate
+        //---------------------------------------------------------
+        fkt = GetGaussData(gp, gp_r, gp_s, gp_t);
+        // Compute geometry
+        ComputeShapefct(1);       // Linear interpolation function
+        if (pcs->m_num->ele_supg_method > 0) //NW
+            ComputeGradShapefct(1);  // Linear interpolation function
+
+        // looping over all unknowns. 
+        for (std::size_t idx_bhe_unknowns = 0; idx_bhe_unknowns < m_BHE->get_n_unknowns(); idx_bhe_unknowns++)
+        {
+            // get coefficient of mass from corresponding BHE. 
+            mat_fac[idx_bhe_unknowns] = m_BHE->get_mass_coeff(idx_bhe_unknowns);
+            // calculate shift. 
+            shift = nnodes * idx_bhe_unknowns; 
+            // calculate mass matrix for current unknown
+            for (i = 0; i < nnodes; i++)
+            for (j = 0; j < nnodes; j++)
+            {
+                mass_matrix(shift + i, shift + j) += mat_fac[idx_bhe_unknowns] * fkt * shapefct[i] * shapefct[j];
+            }
+        }
+
+    }   // end of for loop gauss points
+
+    // Test Output
+    //Mass->Write();
 }
 
 /***************************************************************************
@@ -4820,6 +4925,308 @@ void CFiniteElementStd::CalcContent()
 }
 
 /***************************************************************************
+GeoSys - Funktion:
+CFiniteElementStd:: CalcBoundaryHeatExchange_BHE
+Aufgabe:
+Compute boundary heat exchange matrices, i.e. int (mat.N.N). Linear interpolation
+for the Borehole Heat Exchanger
+
+Programming:
+06/2014   HS
+**************************************************************************/
+
+void CFiniteElementStd::CalcBoundaryHeatExchange_BHE(BHE::BHEAbstract * m_BHE, Eigen::MatrixXd & R_matrix, Eigen::MatrixXd & R_pi_s_matrix, Eigen::MatrixXd & R_s)
+{
+    int i, j;
+    // ---- Gauss integral
+    int gp_r = 0, gp_s = 0, gp_t = 0;
+    double fkt;
+    // Material
+    double mat_fac[8];
+    mat_fac[0] = mat_fac[1] = mat_fac[2] = mat_fac[3] = mat_fac[4] = mat_fac[5] = mat_fac[6] = mat_fac[7] = 0.0;
+
+    const std::size_t n_dim = this->ele_dim;
+
+    ElementValue* gp_ele = ele_gp_value[Index]; 
+
+    matBHE_loc_R = Eigen::MatrixXd::Zero(nnodes, nnodes);
+
+    R_s = Eigen::MatrixXd::Zero(nnodes, nnodes);
+    R_matrix.setZero(); 
+    R_pi_s_matrix.setZero();
+    //----------------------------------------------------------------------
+    //======================================================================
+    // looping over all unknowns. 
+    for (std::size_t idx_bhe_unknowns = 0; idx_bhe_unknowns < m_BHE->get_n_heat_exchange_terms(); idx_bhe_unknowns++)
+    {
+        matBHE_loc_R.setZero();
+        // Loop over Gauss points
+        for (gp = 0; gp < nGaussPoints; gp++)
+        {
+            //---------------------------------------------------------
+            //  Get local coordinates and weights
+            //  Compute Jacobian matrix and its determinate
+            //---------------------------------------------------------
+            fkt = GetGaussData(gp, gp_r, gp_s, gp_t);
+            // Compute geometry
+            ComputeShapefct(1);       // Linear interpolation function
+            if (pcs->m_num->ele_supg_method > 0) //NW
+                ComputeGradShapefct(1);  // Linear interpolation function
+
+
+            // get coefficient of Laplace matrix from corresponding BHE. 
+            mat_fac[idx_bhe_unknowns] = m_BHE->get_boundary_heat_exchange_coeff(idx_bhe_unknowns);
+
+            // calculate mass matrix for current unknown
+            for (i = 0; i < nnodes; i++)
+            for (j = 0; j < nnodes; j++)
+            {
+                matBHE_loc_R(i, j) += fkt * mat_fac[idx_bhe_unknowns] * shapefct[i] * shapefct[j];
+            }
+        }  // end of for loop gauss points
+
+        // The following assembly action is according to Diersch (2013) FEFLOW book
+        // please refer to M.127 and M.128 on page 955 and 956
+        switch (m_BHE->get_type())
+        {
+        case BHE::BHE_TYPE_1U:
+            switch (idx_bhe_unknowns)
+            {
+            case 0:  // PHI_fig
+                R_matrix.block(0, 2 * nnodes, nnodes, nnodes) += -1.0 * matBHE_loc_R;
+                R_matrix.block(2 * nnodes, 0, nnodes, nnodes) += -1.0 * matBHE_loc_R;
+
+                R_matrix.block(0, 0, nnodes, nnodes) += 1.0 * matBHE_loc_R; // K_i1
+                R_matrix.block(2 * nnodes, 2 * nnodes, nnodes, nnodes) += 1.0 * matBHE_loc_R; // K_ig
+                break;
+            case 1:  // PHI_fog
+                R_matrix.block(nnodes, 3 * nnodes, nnodes, nnodes) += -1.0 * matBHE_loc_R;
+                R_matrix.block(3 * nnodes, nnodes, nnodes, nnodes) += -1.0 * matBHE_loc_R;
+
+                R_matrix.block(nnodes, nnodes, nnodes, nnodes) += 1.0 * matBHE_loc_R; // K_o1
+                R_matrix.block(3 * nnodes, 3 * nnodes, nnodes, nnodes) += 1.0 * matBHE_loc_R; // K_og
+                break;
+            case 2:  // PHI_gg
+                R_matrix.block(2 * nnodes, 3 * nnodes, nnodes, nnodes) += -1.0 * matBHE_loc_R;
+                R_matrix.block(3 * nnodes, 2 * nnodes, nnodes, nnodes) += -1.0 * matBHE_loc_R;
+
+                R_matrix.block(2 * nnodes, 2 * nnodes, nnodes, nnodes) += 1.0 * matBHE_loc_R;  // K_ig  // notice we only have 1 PHI_gg term here. 
+                R_matrix.block(3 * nnodes, 3 * nnodes, nnodes, nnodes) += 1.0 * matBHE_loc_R;  // K_og  // see Diersch 2013 FEFLOW book page 954 Table M.2
+                break;
+            case 3:  // PHI_gs
+                R_s += 1.0 * matBHE_loc_R; 
+
+                R_pi_s_matrix.block(2 * nnodes, 0, nnodes, nnodes) += -1.0 * matBHE_loc_R;
+                R_pi_s_matrix.block(3 * nnodes, 0, nnodes, nnodes) += -1.0 * matBHE_loc_R;
+                R_matrix.block(2 * nnodes, 2 * nnodes, nnodes, nnodes) += 1.0 * matBHE_loc_R;  // K_ig
+                R_matrix.block(3 * nnodes, 3 * nnodes, nnodes, nnodes) += 1.0 * matBHE_loc_R;  // K_og
+                break;
+            }
+            break;
+        case BHE::BHE_TYPE_2U:
+            switch (idx_bhe_unknowns)
+            {
+            case 0:  // R i1 i2
+                R_matrix.block(0, 4 * nnodes, nnodes, nnodes) += -1.0 * matBHE_loc_R;
+                R_matrix.block(4 * nnodes, 0, nnodes, nnodes) += -1.0 * matBHE_loc_R;
+                R_matrix.block(nnodes, 5 * nnodes, nnodes, nnodes) += -1.0 * matBHE_loc_R;
+                R_matrix.block(5 * nnodes, nnodes, nnodes, nnodes) += -1.0 * matBHE_loc_R;
+
+                R_matrix.block(0, 0, nnodes, nnodes) += 1.0 * matBHE_loc_R; // K_i1
+                R_matrix.block(nnodes, nnodes, nnodes, nnodes) += 1.0 * matBHE_loc_R; // K_i2
+                R_matrix.block(4 * nnodes, 4 * nnodes, nnodes, nnodes) += 1.0 * matBHE_loc_R; // K_ig
+                R_matrix.block(5 * nnodes, 5 * nnodes, nnodes, nnodes) += 1.0 * matBHE_loc_R; // K_ig
+                break;
+            case 1:  // R o1 o2
+                R_matrix.block(2 * nnodes, 6 * nnodes, nnodes, nnodes) += -1.0 * matBHE_loc_R;
+                R_matrix.block(6 * nnodes, 2 * nnodes, nnodes, nnodes) += -1.0 * matBHE_loc_R;
+                R_matrix.block(3 * nnodes, 7 * nnodes, nnodes, nnodes) += -1.0 * matBHE_loc_R;
+                R_matrix.block(7 * nnodes, 3 * nnodes, nnodes, nnodes) += -1.0 * matBHE_loc_R;
+
+                R_matrix.block(2 * nnodes, 2 * nnodes, nnodes, nnodes) += 1.0 * matBHE_loc_R; // K_o1
+                R_matrix.block(3 * nnodes, 3 * nnodes, nnodes, nnodes) += 1.0 * matBHE_loc_R; // K_o2
+                R_matrix.block(6 * nnodes, 6 * nnodes, nnodes, nnodes) += 1.0 * matBHE_loc_R; // K_og
+                R_matrix.block(7 * nnodes, 7 * nnodes, nnodes, nnodes) += 1.0 * matBHE_loc_R; // K_og
+                break;
+            case 2:  // R g1
+                R_matrix.block(4 * nnodes, 6 * nnodes, nnodes, nnodes) += -1.0 * matBHE_loc_R;
+                R_matrix.block(6 * nnodes, 4 * nnodes, nnodes, nnodes) += -1.0 * matBHE_loc_R;
+                R_matrix.block(4 * nnodes, 7 * nnodes, nnodes, nnodes) += -1.0 * matBHE_loc_R;
+                R_matrix.block(7 * nnodes, 4 * nnodes, nnodes, nnodes) += -1.0 * matBHE_loc_R;
+                R_matrix.block(5 * nnodes, 6 * nnodes, nnodes, nnodes) += -1.0 * matBHE_loc_R;
+                R_matrix.block(6 * nnodes, 5 * nnodes, nnodes, nnodes) += -1.0 * matBHE_loc_R;
+                R_matrix.block(5 * nnodes, 7 * nnodes, nnodes, nnodes) += -1.0 * matBHE_loc_R;
+                R_matrix.block(7 * nnodes, 5 * nnodes, nnodes, nnodes) += -1.0 * matBHE_loc_R;
+
+                R_matrix.block(4 * nnodes, 4 * nnodes, nnodes, nnodes) += 2.0 * matBHE_loc_R; // K_ig
+                R_matrix.block(5 * nnodes, 5 * nnodes, nnodes, nnodes) += 2.0 * matBHE_loc_R; // K_ig
+                R_matrix.block(6 * nnodes, 6 * nnodes, nnodes, nnodes) += 2.0 * matBHE_loc_R; // K_og
+                R_matrix.block(7 * nnodes, 7 * nnodes, nnodes, nnodes) += 2.0 * matBHE_loc_R; // K_og
+                break;
+            case 3:  // R g2
+                R_matrix.block(6 * nnodes, 7 * nnodes, nnodes, nnodes) += -1.0 * matBHE_loc_R;
+                R_matrix.block(7 * nnodes, 6 * nnodes, nnodes, nnodes) += -1.0 * matBHE_loc_R;
+
+                R_matrix.block(4 * nnodes, 4 * nnodes, nnodes, nnodes) += 1.0 * matBHE_loc_R; // K_ig
+                R_matrix.block(5 * nnodes, 5 * nnodes, nnodes, nnodes) += 1.0 * matBHE_loc_R; // K_ig
+                R_matrix.block(6 * nnodes, 6 * nnodes, nnodes, nnodes) += 1.0 * matBHE_loc_R; // K_og
+                R_matrix.block(7 * nnodes, 7 * nnodes, nnodes, nnodes) += 1.0 * matBHE_loc_R; // K_og
+                break;
+            case 4:  // R s
+                R_s += 1.0 * matBHE_loc_R;
+
+                R_pi_s_matrix.block(4 * nnodes, 0, nnodes, nnodes) += -1.0 * matBHE_loc_R;
+                R_pi_s_matrix.block(5 * nnodes, 0, nnodes, nnodes) += -1.0 * matBHE_loc_R;
+                R_pi_s_matrix.block(6 * nnodes, 0, nnodes, nnodes) += -1.0 * matBHE_loc_R;
+                R_pi_s_matrix.block(7 * nnodes, 0, nnodes, nnodes) += -1.0 * matBHE_loc_R;
+
+                R_matrix.block(4 * nnodes, 4 * nnodes, nnodes, nnodes) += matBHE_loc_R; // K_gs
+                R_matrix.block(5 * nnodes, 5 * nnodes, nnodes, nnodes) += matBHE_loc_R; // K_gs
+                R_matrix.block(6 * nnodes, 6 * nnodes, nnodes, nnodes) += matBHE_loc_R; // K_gs
+                R_matrix.block(7 * nnodes, 7 * nnodes, nnodes, nnodes) += matBHE_loc_R; // K_gs
+                break;
+            }
+            break;
+        case BHE::BHE_TYPE_CXA:
+            switch (idx_bhe_unknowns)
+            {
+            case 0:  // R i1
+                R_matrix.block(0, 2 * nnodes, nnodes, nnodes) += -1.0 * matBHE_loc_R;
+                R_matrix.block(2 * nnodes, 0, nnodes, nnodes) += -1.0 * matBHE_loc_R;
+
+                R_matrix.block(0, 0, nnodes, nnodes) += 1.0 * matBHE_loc_R; // K_i1
+                R_matrix.block(2 * nnodes, 2 * nnodes, nnodes, nnodes) += 1.0 * matBHE_loc_R; // K_ig
+                break;
+            case 1:  // R io
+                R_matrix.block(0, nnodes, nnodes, nnodes) += -1.0 * matBHE_loc_R;
+                R_matrix.block(nnodes, 0, nnodes, nnodes) += -1.0 * matBHE_loc_R;
+
+                R_matrix.block(0, 0, nnodes, nnodes) += 1.0 * matBHE_loc_R; // K_i1
+                R_matrix.block(nnodes, nnodes, nnodes, nnodes) += 1.0 * matBHE_loc_R; // K_o1
+                break;
+            case 2:  // R s
+                R_s += matBHE_loc_R;
+
+                R_pi_s_matrix.block(2 * nnodes, 0, nnodes, nnodes) += -1.0 * matBHE_loc_R;
+
+                R_matrix.block(2 * nnodes, 2 * nnodes, nnodes, nnodes) += matBHE_loc_R; // K_gs
+                break;
+            }
+            break;
+        case BHE::BHE_TYPE_CXC:
+            switch (idx_bhe_unknowns)
+            {
+            case 0:  // R o1
+                R_matrix.block(dim, 2 * nnodes, nnodes, nnodes) += -1.0 * matBHE_loc_R;
+                R_matrix.block(2 * nnodes, dim, nnodes, nnodes) += -1.0 * matBHE_loc_R;
+
+                R_matrix.block(nnodes, nnodes, nnodes, nnodes) += 1.0 * matBHE_loc_R; // K_o1
+                R_matrix.block(2 * nnodes, 2 * nnodes, nnodes, nnodes) += 1.0 * matBHE_loc_R; // K_og
+                break;
+            case 1:  // R io
+                R_matrix.block(0, nnodes, nnodes, nnodes) += -1.0 * matBHE_loc_R;
+                R_matrix.block(nnodes, 0, nnodes, nnodes) += -1.0 * matBHE_loc_R;
+
+                R_matrix.block(0, 0, nnodes, nnodes) += 1.0 * matBHE_loc_R; // K_i1
+                R_matrix.block(nnodes, nnodes, nnodes, nnodes) += 1.0 * matBHE_loc_R; // K_o1
+                break;
+            case 2:  // R s
+                R_s += matBHE_loc_R;
+
+                R_pi_s_matrix.block(2 * nnodes, 0, nnodes, nnodes) += -1.0 * matBHE_loc_R;
+
+                R_matrix.block(2 * nnodes, 2 * nnodes, nnodes, nnodes) += matBHE_loc_R; // K_gs
+                break;
+            }
+            break;
+        }
+    }   
+
+    // Laplace->Write();
+
+}
+
+/***************************************************************************
+GeoSys - Funktion:
+CFiniteElementStd:: CalcLaplace_BHE
+Aufgabe:
+Compute Laplace matrix, i.e. int (gradN.mat.gradN). Linear interpolation
+for the Borehole Heat Exchanger
+
+Programming:
+06/2014   HS
+**************************************************************************/
+void CFiniteElementStd::CalcLaplace_BHE(BHE::BHEAbstract * m_BHE, Eigen::MatrixXd & laplace_matrix)
+{
+    int i, j, k, l;
+    // ---- Gauss integral
+    int gp_r = 0, gp_s = 0, gp_t = 0;
+    double fkt;
+    // Material
+    double mat_fac[8];
+    mat_fac[0] = mat_fac[1] = mat_fac[2] = mat_fac[3] = mat_fac[4] = mat_fac[5] = mat_fac[6] = mat_fac[7] = 0.0;
+
+    double alpha[3], summand[8];
+
+    const std::size_t n_dim = this->ele_dim;
+    std::size_t shift(0);
+
+    int upwind_method = pcs->m_num->ele_upwind_method;
+    MNulleVec(alpha, 3);
+    MNulleVec(summand, 8);
+
+    ElementValue* gp_ele = ele_gp_value[Index]; //NW
+    Eigen::MatrixXd mat_Laplace = Eigen::MatrixXd::Zero(3, 3); 
+
+    //----------------------------------------------------------------------
+    //======================================================================
+    // Loop over Gauss points
+    for (gp = 0; gp < nGaussPoints; gp++)
+    {
+        //---------------------------------------------------------
+        //  Get local coordinates and weights
+        //  Compute Jacobian matrix and its determinate
+        //---------------------------------------------------------
+        fkt = GetGaussData(gp, gp_r, gp_s, gp_t);
+        // Compute geometry
+        ComputeShapefct(1);       // Linear interpolation function
+        ComputeGradShapefct(1);   // Linear interpolation function
+
+        // looping over all unknowns. 
+        for (std::size_t idx_bhe_unknowns = 0; idx_bhe_unknowns < m_BHE->get_n_unknowns(); idx_bhe_unknowns++)
+        {
+            // get coefficient of Laplace matrix from corresponding BHE. 
+            m_BHE->get_laplace_matrix(idx_bhe_unknowns, mat_Laplace);
+            // calculate shift. 
+            shift = nnodes * idx_bhe_unknowns;
+            // calculate mass matrix for current unknown
+            for (i = 0; i < nnodes; i++)
+            {
+                const int iish = i + shift;
+                for (j = 0; j < nnodes; j++)
+                {
+                    const int jjsh = j + shift;
+                    //  if(j>i) continue;  
+                    for (k = 0; k < dim; k++)
+                    {
+                        const int ksh = k*nnodes + i;
+                        for (l = 0; l< (int)dim; l++)
+                        {
+                            laplace_matrix(iish, jjsh) += fkt * dshapefct[ksh] * mat_Laplace(k, l) * dshapefct[l*nnodes + j];
+                        }
+                    }
+                } // j: nodes
+            } // i: nodes	
+        }
+
+    }   // end of for loop gauss points
+
+    //// debugging info
+    //std::cout << "laplace matrix after assembly: \n";
+    //std::cout << laplace_matrix << "\n"; 
+
+}
+/***************************************************************************
    GeoSys - Funktion:
            CFiniteElementStd:: CalcLaplace
    Aufgabe:
@@ -5128,6 +5535,59 @@ double CFiniteElementStd::CalcCoefDualTransfer()
 		break;
 	}
 	return val;
+}
+
+void CFiniteElementStd::CalcAdvection_BHE(BHE::BHEAbstract * m_BHE, Eigen::MatrixXd & advection_matrix)
+{
+    int i, j, k;
+    // ---- Gauss integral
+    int gp_r = 0, gp_s = 0, gp_t = 0;
+    double fkt;
+    // Material
+    double mat_fac[8];
+    mat_fac[0] = mat_fac[1] = mat_fac[2] = mat_fac[3] = mat_fac[4] = mat_fac[5] = mat_fac[6] = mat_fac[7] = 0.0;
+
+    double alpha[3], summand[8];
+
+    const std::size_t n_dim = this->ele_dim;
+    std::size_t shift(0);
+
+    int upwind_method = pcs->m_num->ele_upwind_method;
+    MNulleVec(alpha, 3);
+    MNulleVec(summand, 8);
+
+    ElementValue* gp_ele = ele_gp_value[Index]; //NW
+    Eigen::VectorXd vec_Advection = Eigen::VectorXd::Zero(3); 
+    //----------------------------------------------------------------------
+    //======================================================================
+    // Loop over Gauss points
+    for (gp = 0; gp < nGaussPoints; gp++)
+    {
+        //---------------------------------------------------------
+        //  Get local coordinates and weights
+        //  Compute Jacobian matrix and its determinate
+        //---------------------------------------------------------
+        fkt = GetGaussData(gp, gp_r, gp_s, gp_t);
+        // Compute geometry
+        ComputeShapefct(1);       // Linear interpolation function
+        ComputeGradShapefct(1);  // Linear interpolation function
+
+        // looping over all unknowns. 
+        for (std::size_t idx_bhe_unknowns = 0; idx_bhe_unknowns < m_BHE->get_n_unknowns(); idx_bhe_unknowns++)
+        {
+            // get coefficient of Laplace matrix from corresponding BHE. 
+            m_BHE->get_advection_vector(idx_bhe_unknowns, vec_Advection);
+            // calculate shift. 
+            shift = nnodes * idx_bhe_unknowns;
+            // calculate mass matrix for current unknown
+            for (i = 0; i < nnodes; i++)
+            for (j = 0; j < nnodes; j++)
+            for (k = 0; k < dim; k++)
+                advection_matrix(shift + i, shift + j) += fkt * shapefct[i] * vec_Advection[k] * dshapefct[k * nnodes + j]; 
+
+        }
+
+    }   // end of for loop gauss points
 }
 
 //SB4200
@@ -8447,6 +8907,444 @@ void CFiniteElementStd::AssembleMixedHyperbolicParabolicEquation()
 	   }
 	 */
 }
+
+void CFiniteElementStd::Assemble_LHS_BHE_Net(BHE::BHE_Net * bhe_net)
+{
+    int i,j;
+    int n_local_eqns; 
+    long global_idx_unknown; 
+    long global_idx_eqn; 
+    long local_idx_unknown; 
+    long local_idx_eqns; 
+    Eigen::MatrixXd matLHS; 
+    Eigen::VectorXd vecRHS; 
+    BHE::bhe_map m_BHE_map = bhe_net->get_network(); 
+
+	#if defined(NEW_EQS)
+		CSparseMatrix* A = NULL;              //WW
+	if (m_dom)
+		A = m_dom->eqs->A;
+	else
+		A = pcs->eqs_new->A;
+	#endif
+
+    // numer of local equations equal to the number of elements in the BHE network plus one
+    n_local_eqns = m_BHE_map.size() + 1;
+    Eigen::VectorXi vec_global_idx = Eigen::VectorXi::Zero(n_local_eqns);
+    // set index of local equations and unknown to zero
+    local_idx_unknown = 0; 
+    local_idx_eqns = 0; 
+    // initialize the local equation system
+    matLHS = Eigen::MatrixXd::Zero(n_local_eqns, n_local_eqns);
+    vecRHS = Eigen::VectorXd::Zero(n_local_eqns);
+    // the global eqn index is set to the end of the BHE nodes
+    global_idx_eqn = bhe_net->get_global_start_idx();
+    // loop over all elements
+    typedef BHE::bhe_map::iterator it_type;
+    // first loop over, make sure the BHE equations are at the top
+    for (it_type iterator = m_BHE_map.begin(); iterator != m_BHE_map.end(); iterator++) {
+        // if it is a BHE
+        if (iterator->second->get_net_ele_type() == BHE::BHE_NET_ELE::BHE_NET_BOREHOLE)
+        {
+            // BHE equation is implicitly handled already, leave it blank
+            // DO NOTHING HERE. 
+            // index still needs to be incremented
+            local_idx_eqns++;
+        }
+        else
+            continue; 
+    }
+
+    // now second loop over, without considering the BHE governing equations
+    for (it_type iterator = m_BHE_map.begin(); iterator != m_BHE_map.end(); iterator++) {
+
+        // depending on different element types
+        // if it is a pipe
+        if (iterator->second->get_net_ele_type() == BHE::BHE_NET_ELE::BHE_NET_PIPE)
+        {
+            // inlet end of the pipeline---------------------------------------
+            local_idx_unknown = iterator->second->get_T_in_local_index();
+            vec_global_idx(local_idx_unknown) = iterator->second->get_T_in_global_index();
+            // operate on local LHS matrix
+            // inlet end give "+1"
+            matLHS(local_idx_eqns, local_idx_unknown) += 1.0; 
+            // end of the inlet part-------------------------------------------
+
+            // outlet end of the pipeline--------------------------------------
+            local_idx_unknown = iterator->second->get_T_out_local_index();
+            vec_global_idx(local_idx_unknown) = iterator->second->get_T_out_global_index();
+            // operate on local LHS matrix
+            // outlet end give "-1"
+            matLHS(local_idx_eqns, local_idx_unknown) += -1.0;
+            // end of the outlet part-------------------------------------------
+
+            // this equation finished, increment
+            local_idx_eqns++;
+        }
+        else if (iterator->second->get_net_ele_type() == BHE::BHE_NET_ELE::BHE_NET_DISTRIBUTOR)
+        {
+            // TODO, make difference whether it is distributor or collector
+            // if distribute to multiple pipes
+            if ( iterator->second->get_n_T_in() == 1 && iterator->second->get_n_T_out() > 1 )
+            {
+                int idx_unknown_local_in, idx_unknown_local_out; 
+
+                for (i = 0; i < iterator->second->get_n_T_out(); i++)
+                {
+                    // notice this is the same in
+                    idx_unknown_local_in = iterator->second->get_T_in_local_index(0);
+                    vec_global_idx(local_idx_unknown) = iterator->second->get_T_in_global_index(0);
+                    // inlet end gives 1
+                    matLHS(local_idx_eqns, idx_unknown_local_in) += 1.0;
+                    // but different out
+                    idx_unknown_local_out = iterator->second->get_T_out_local_index(i);
+                    vec_global_idx(local_idx_unknown) = iterator->second->get_T_out_global_index(i);
+                    // outlet end gives -1
+                    matLHS(local_idx_eqns, idx_unknown_local_out) += -1.0;
+
+                    // this equation finished, increment
+                    local_idx_eqns++;
+                }
+            }
+            // if collecting from multiple pipes
+            else if (iterator->second->get_n_T_in() > 1 && iterator->second->get_n_T_out() == 1)
+            {
+                // inlet end of the distributor---------------------------------------
+                for (i = 0; i < iterator->second->get_n_T_in(); i++)
+                {
+                    local_idx_unknown = iterator->second->get_T_in_local_index(i);
+                    vec_global_idx(local_idx_unknown) = iterator->second->get_T_in_global_index(i);
+                    // operate on local LHS matrix
+                    // inlet end give the inlet ratio
+                    matLHS(local_idx_eqns, local_idx_unknown) += iterator->second->get_inlet_ratio(i);
+                }
+                // end of the inlet part-------------------------------------------
+
+                // outlet end of the distributor--------------------------------------
+                local_idx_unknown = iterator->second->get_T_out_local_index(0);
+                vec_global_idx(local_idx_unknown) = iterator->second->get_T_out_global_index(0);
+                // operate on local LHS matrix
+                // outlet end give the outlet ratio
+                // notice because of the outlet, here is negative ratio. 
+                matLHS(local_idx_eqns, local_idx_unknown) += -1.0 * iterator->second->get_outlet_ratio(0);
+                // end of the outlet part-------------------------------------------
+                
+                // this equation finished, increment
+                local_idx_eqns++;
+            }
+        }
+        else if (iterator->second->get_net_ele_type() == BHE::BHE_NET_ELE::BHE_NET_HEATPUMP)
+        {
+            // inlet end of the heat pump---------------------------------------
+            local_idx_unknown = iterator->second->get_T_in_local_index();
+            vec_global_idx(local_idx_unknown) = iterator->second->get_T_in_local_index();
+            // operate on local LHS matrix
+            // inlet end give "+1"
+            matLHS(local_idx_eqns, local_idx_unknown) += 1.0;
+            // end of the inlet part-------------------------------------------
+
+            // outlet end of the heat pump--------------------------------------
+            local_idx_unknown = iterator->second->get_T_out_local_index();
+            vec_global_idx(local_idx_unknown) = iterator->second->get_T_out_global_index();
+            // operate on local LHS matrix
+            // outlet end give "-1"
+            matLHS(local_idx_eqns, local_idx_unknown) += -1.0;
+            // end of the outlet part-------------------------------------------
+
+            // if the heat pump is heating up the refrigerant or cooling it down
+            // do something on the RHS of the local equation. 
+            vecRHS(local_idx_eqns) += iterator->second->get_RHS_value();
+
+            // this equation finished, increment
+            local_idx_eqns++;
+        }
+        else
+        {
+            continue; 
+        }
+    }
+
+    // local matrix finished. 
+#ifdef _DEBUG
+    std::cout << "The LHS matrix of the local BHE network equation sytem is: \n"; 
+    std::cout << matLHS << std::endl; 
+    std::cout << "The RHS vector of the local BHE network equation sytem is: \n";
+    std::cout << vecRHS << std::endl;
+    std::cout << "The global index vector for local unknowns is: \n";
+    std::cout << vec_global_idx << std::endl;
+#endif
+
+    // now assemble the local matrix to global one
+    for (i = 0; i < matLHS.rows(); i++)
+    {
+        global_idx_eqn = (long)vec_global_idx(i);
+        for (j = 0; j < matLHS.cols(); j++)
+        {
+            // obtain the global index for this local unknown
+            global_idx_unknown = (long) vec_global_idx(j);
+            #ifdef NEW_EQS
+                (*A)(global_idx_eqn, global_idx_unknown) += matLHS(i, j);
+            #else
+                MXInc(global_idx_eqn, global_idx_unknown, matLHS(i, j));
+            #endif
+        }
+        // assemble to global RHS vector
+        #ifdef NEW_EQS
+            pcs->eqs_new->b[global_idx_eqn] += vecRHS(i);
+        #else
+            pcs->eqs->b[global_idx_eqn] += vecRHS(i);
+        #endif
+    }
+
+}
+
+/**************************************************************************
+FEMLib-Method:
+Task: Assemble local matrices of mixed hyperbolic and parabolic equation for
+the Borehole Heat Exchangers to the global system
+Programing:
+06/2014 HS Implementation
+**************************************************************************/
+void CFiniteElementStd::AssembleMixedHyperbolicParabolicEquation_BHE()
+{
+    int k;
+    std::size_t idx_bhe; 
+    long nodes_bhe[2];
+    long nodes_bhe_soil[2];
+    double pcs_time_step, dt_inverse;
+    ElementMatrix* EleMat = NULL;         //SB-3
+    // NUM
+    double theta = pcs->m_num->ls_theta;  //OK
+    std::size_t shift_start(0);  // HS, starting point of this BHE and elements
+#if defined(NEW_EQS)
+    CSparseMatrix* A = NULL;              //WW
+    if (m_dom)
+        A = m_dom->eqs->A;
+    else
+        A = pcs->eqs_new->A;
+#endif
+
+    // find out which BHE it is
+    BHE::BHEAbstract* m_bhe; 
+    std::size_t idx_mmp = this->GetMeshElement()->GetPatchIndex(); 
+    shift_start = pcs->m_msh->GetNodesNumber(false); 
+    if (mmp_vector[idx_mmp] && mmp_vector[idx_mmp]->is_BHE)
+    {
+        // this is a BHE
+        // loop over all BHEs
+        for (std::size_t idx = 0; idx < vec_BHEs.size(); idx++)
+        {
+            if (mmp_vector[idx_mmp]->geo_name == vec_BHEs[idx]->get_name())
+            {
+                m_bhe = vec_BHEs[idx];
+                idx_bhe = idx; 
+                break;
+            }  // end of if           
+            shift_start += vec_BHE_nodes[idx].size() * vec_BHEs[idx]->get_n_unknowns();
+        }  // end of for
+    }
+    else
+    {
+        std::cout << "Error: In Assemble BHEs, the corresponding Media Property data structure was not found. \n";    
+    }
+
+
+
+    // JT2012: Get the time step of this process! Now dt can be independently controlled
+    pcs_time_step = pcs->Tim->time_step_length;
+    dt_inverse = 1.0 / pcs_time_step; // (also, no need to check minimum. It is handeled in Tim.
+
+    const std::size_t loc_mat_size(nnodes * m_bhe->get_n_unknowns() );
+    // Initialize, clear the content of local matrix
+    matBHE_P = Eigen::MatrixXd::Zero(loc_mat_size, loc_mat_size);
+    matBHE_L = Eigen::MatrixXd::Zero(loc_mat_size, loc_mat_size);
+    matBHE_W = Eigen::MatrixXd::Zero(loc_mat_size, loc_mat_size);
+    matBHE_R_pi_s = Eigen::MatrixXd::Zero(loc_mat_size, nnodes);  // see M.128
+    matBHE_R_s = Eigen::MatrixXd::Zero(nnodes, nnodes); 
+
+    matBHE_R = Eigen::MatrixXd::Zero(loc_mat_size, loc_mat_size);
+
+    mat_local_LHS = Eigen::MatrixXd::Zero(loc_mat_size, loc_mat_size);
+    vec_local_RHS = Eigen::VectorXd::Zero(loc_mat_size);
+
+    Eigen::VectorXd vec_T_pi_pre = Eigen::VectorXd::Zero(loc_mat_size); 
+    Eigen::VectorXd vec_T_pi_cur = Eigen::VectorXd::Zero(loc_mat_size); 
+    Eigen::VectorXd vec_T_soil_pre = Eigen::VectorXd::Zero(nnodes);  // nodal soil temperature vector
+    Eigen::VectorXd vec_T_soil_cur = Eigen::VectorXd::Zero(nnodes);  // nodal soil temperature vector
+
+    // fill in the last time step values
+    double T_val_pre;
+    std::size_t idx_unknown_shift; 
+    idx_unknown_shift = 2;
+    for (std::size_t i = 0; i < nnodes; i++)
+    {
+        for (std::size_t j = 0; j < vec_BHE_nodes[idx_bhe].size(); j++)
+        if (vec_BHE_nodes[idx_bhe][j] == nodes[i])
+        {
+            nodes_bhe[i] = j;
+            nodes_bhe_soil[i] = vec_BHE_nodes[idx_bhe][j];
+        }
+    }
+
+    for (k = 0; k < idx_bhe; k++)
+        idx_unknown_shift += vec_BHEs[k]->get_n_unknowns() * 2;
+    for (std::size_t i = 0; i < m_bhe->get_n_unknowns(); i++)
+    {
+        for (std::size_t j = 0; j < nnodes; j++)
+        {
+            std::size_t idx_unknown = idx_unknown_shift + 2 * i;  
+            T_val_pre = pcs->GetNodeValue(nodes_bhe[j], idx_unknown); // the index "0" and "1" were Ts values, we start from index "2"
+            vec_T_pi_pre(i*nnodes + j) = T_val_pre;
+            T_val_pre = pcs->GetNodeValue(nodes_bhe[j], idx_unknown + 1); // current value
+            vec_T_pi_cur(i*nnodes + j) = T_val_pre;
+        }
+    }
+    for (std::size_t j = 0; j < nnodes; j++)
+    {
+        vec_T_soil_pre(j) = pcs->GetNodeValue(nodes_bhe[j], 0);  // previous time step soil temperature
+        vec_T_soil_cur(j) = pcs->GetNodeValue(nodes_bhe[j], 1);  // current time step soil temperature
+    }
+
+    // std::cout << "vec_T_pi_pre: \n";
+    // std::cout << vec_T_pi_pre << "\n";
+
+    //----------------------------------------------------------------------
+    // Calculate matrices
+    // Mass matrix..........................................................
+    if (this->pcs->tim_type != TimType::STEADY)
+    {
+        // if (pcs->m_num->ele_mass_lumping)
+        //    CalcLumpedMass();
+        // else
+        CalcMass_BHE(m_bhe, matBHE_P);
+    }
+    //std::cout << "matBHE_P: \n";
+    //std::cout << matBHE_P << "\n";
+
+    // Laplace matrix for BHE.......................................................
+    CalcLaplace_BHE(m_bhe, matBHE_L);
+
+    // std::cout << "matBHE_L after laplace: \n";
+    // std::cout << matBHE_L << "\n";
+
+    // Advection matrix for BHE.....................................................
+    CalcAdvection_BHE(m_bhe, matBHE_L);
+
+    //std::cout << "matBHE_L after advection: \n";
+    //std::cout << matBHE_L << "\n";
+
+    // calculate Cauchy type of boundary condition matrix.....................................
+    CalcBoundaryHeatExchange_BHE(m_bhe, matBHE_R, matBHE_R_pi_s, matBHE_R_s);
+
+    //std::cout << "matBHE_R: \n";
+    //std::cout << matBHE_R << "\n";
+    // matBHE_L.setZero();  // test, later should be removed. 
+    matBHE_L += matBHE_R; 
+
+    //// debugging................................
+    //std::cout << "matBHE_P: \n";
+    //std::cout << matBHE_P << "\n";
+    //std::cout << "matBHE_L: \n"; 
+    //std::cout << matBHE_L << "\n";
+    //std::cout << "matBHE_R: \n";
+    //std::cout << matBHE_R << "\n";
+    //std::cout << "matBHE_R_pi_s: \n";
+    //std::cout << matBHE_R_pi_s << "\n";
+    //// exit(1); 
+    //// end of debugging.........................
+
+    // local LHS and RHS, see page 688, Eq. 13.47 of Diersch (2013) FEFLOW book
+    // A_pi
+    mat_local_LHS = dt_inverse * matBHE_P + theta * matBHE_L; 
+    // B_pi
+    vec_local_RHS = (dt_inverse * matBHE_P - (1.0 - theta) * matBHE_L) * vec_T_pi_pre;
+
+
+    //// debugging................................
+    //std::cout << "mat_local_LHS: \n";
+    //std::cout << mat_local_LHS << "\n";
+    //std::cout << "vec_T_pi_pre: \n"; 
+    //std::cout << vec_T_pi_pre << "\n";
+    //std::cout << "vec_local_RHS: \n";
+    //std::cout << vec_local_RHS << "\n";
+    //// exit(1); 
+    //// end of debugging.........................
+
+    // put it to the correct posistion of global LHS and RHS
+    std::size_t shift_i(0), shift_j(0);
+    std::size_t idx_unknown, idx_node; 
+    for (std::size_t i = 0; i < (std::size_t) mat_local_LHS.rows(); i++)
+    {
+        idx_unknown = i / nnodes; 
+        idx_node = nodes_bhe[i % nnodes];
+        shift_i = shift_start + idx_node * m_bhe->get_n_unknowns() + idx_unknown;
+        for (std::size_t j = 0; j < (std::size_t) mat_local_LHS.cols(); j++)
+        {
+            idx_unknown = j / nnodes;
+            idx_node = nodes_bhe[j % nnodes];
+            shift_j = shift_start + idx_node * m_bhe->get_n_unknowns() + idx_unknown;
+
+            // A_pi assembly
+#ifdef NEW_EQS
+            (*A)(shift_i, shift_j) += mat_local_LHS(i,j);
+#else
+            MXInc(shift_i, shift_j, mat_local_LHS(i, j));
+#endif
+        }  // end of for j
+    }  // end of for i
+
+
+    for (std::size_t i = 0; i < (std::size_t) vec_local_RHS.rows(); i++)
+    {
+        idx_unknown = i / nnodes;
+        idx_node = nodes_bhe[i % nnodes];
+        shift_i = shift_start + idx_node * m_bhe->get_n_unknowns() + idx_unknown;
+         
+        // RHS assembly
+        #ifdef NEW_EQS
+            if (m_dom)
+                m_dom->eqs->b[shift_i] += vec_local_RHS(i);
+            else
+                pcs->eqs_new->b[shift_i] += vec_local_RHS(i);
+        #else
+            pcs->eqs->b[shift_i] += vec_local_RHS(i);
+        #endif
+        
+        // B_pi assembly
+        for (std::size_t j = 0; j < nnodes; j++)
+        {
+            // R_pi_s and R_s_pi assembly
+            shift_j = nodes[j % nnodes]; 
+#ifdef NEW_EQS
+            (*A)(shift_i, shift_j) += matBHE_R_pi_s(i, j);
+            (*A)(shift_j, shift_i) += matBHE_R_pi_s(i, j);
+#else
+            MXInc(shift_i, shift_j, matBHE_R_pi_s(i, j));
+            MXInc(shift_j, shift_i, matBHE_R_pi_s(i, j));
+#endif
+        }
+    }
+
+
+    size_t G = m_bhe->get_n_grout_zones();
+    // assemble the Rs matrix to global LHS and RHS, soil part
+    for (std::size_t i = 0; i < nnodes; i++)
+    {
+        shift_i = nodes_bhe_soil[i];
+        for (std::size_t j = 0; j < nnodes; j++)
+        {
+            shift_j = nodes_bhe_soil[j];
+#ifdef NEW_EQS
+            (*A)(shift_i, shift_j) += 1.0 * theta *G * matBHE_R_s(i, j);
+#else
+            MXInc(shift_i, shift_j,  1.0 * theta * G * matBHE_R_s(i, j));
+#endif
+        }
+    
+    }
+
+}
+
 /**************************************************************************
    FEMLib-Method:
    Task: Assemble local matrices of parabolic equation to the global system
@@ -9158,13 +10056,22 @@ void CFiniteElementStd::Assembly()
 		heat_phase_change = false; // ?2WW
 		//  if(SolidProp->GetCapacityModel()==2) // Boiling model
 		//    CalNodalEnthalpy();
-		//CMCD4213
-		AssembleMixedHyperbolicParabolicEquation();
-		if(FluidProp->density_model == 14 && MediaProp->heat_diffusion_model == 1 &&
-		   cpl_pcs )
-			Assemble_RHS_HEAT_TRANSPORT();  // This include when need pressure terms n dp/dt + nv.Nabla p//AKS
-		if(MediaProp->evaporation == 647)
-			Assemble_RHS_HEAT_TRANSPORT2();  //AKS
+
+        if ( this->pcs->getProcessType() == FiniteElement::HEAT_TRANSPORT_BHE && ele_dim == 1 ) 
+        {
+            // this is a BHE element
+            AssembleMixedHyperbolicParabolicEquation_BHE(); 
+        }
+        else
+        {
+            //CMCD4213
+            AssembleMixedHyperbolicParabolicEquation();
+            if (FluidProp->density_model == 14 && MediaProp->heat_diffusion_model == 1 &&
+                    cpl_pcs)
+                    Assemble_RHS_HEAT_TRANSPORT();  // This include when need pressure terms n dp/dt + nv.Nabla p//AKS
+            if (MediaProp->evaporation == 647)
+                Assemble_RHS_HEAT_TRANSPORT2();  //AKS
+        }
 
 #if defined(USE_PETSC) // || defined(other parallel libs)//03~04.3012. WW
 		add2GlobalMatrixII();
