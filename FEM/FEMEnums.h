@@ -41,6 +41,7 @@ enum ProcessType
 	GROUNDWATER_FLOW,                     //!< GROUNDWATER_FLOW
 	/// T process, single/multi-phase flow
 	HEAT_TRANSPORT,                       //!< HEAT_TRANSPORT
+	HEAT_TRANSPORT_BHE,                   //!< HEAT_TRANSPORT with Borehole Heat Exchanger
 	/// H process, incompressible flow
 	LIQUID_FLOW,                          //!< LIQUID_FLOW
 	MASS_TRANSPORT,                       //!< MASS_TRANSPORT
@@ -190,6 +191,7 @@ const std::list<std::string> getAllPrimaryVariableNames();
 	RECHARGE_DIRECT,
 	FUNCTION,
 	GRADIENT,                             // IC
+	VERTICAL_DISTRIBUTION,				  // IC
 	GREEN_AMPT,                           // ST
 	RESTART,                              // IC
 	LINEAR,                               // BC, ST
