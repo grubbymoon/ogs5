@@ -132,6 +132,7 @@ class Problem
       inline double OverlandFlow();
       inline double AirFlow();
       inline double HeatTransport();
+      inline double HeatTransport_BHE(); 
       inline double FluidMomentum();
       inline double RandomWalker();
       inline double MassTrasport();
@@ -163,7 +164,7 @@ class Problem
     /// processor number for MPI
 	int msize;
 
-	static const size_t max_processes = 16;
+	static const size_t max_processes = 17;
 };
 
 extern bool MODCreate();                          //OK

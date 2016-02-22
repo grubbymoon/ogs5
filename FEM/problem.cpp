@@ -611,10 +611,12 @@ Problem::~Problem()
     6: OVERLAND_FLOW   | 7: AIR_FLOW          | 8: HEAT_TRANSPORT
     9: FLUID_MOMENTUM  |10: RANDOM_WALK       |11: MASS_TRANSPORT
    12: DEFORMATION     | 14: TNEQ             |15: TES
+   16: HEAT_TRANSPORT_BHE
    Return:
    Programming:
    07/2008 WW
    03/2009 PCH added PS_GLOBAL
+   06/2014 HS added HEAT_TRANSPORT_BHE
    Modification:
    -------------------------------------------------------------------------*/
 inline int Problem::AssignProcessIndex(CRFProcess* m_pcs, bool activefunc)
@@ -769,6 +771,15 @@ inline int Problem::AssignProcessIndex(CRFProcess* m_pcs, bool activefunc)
 		active_processes[15] = &Problem::TES;
 		return 15;
 	}
+	else if (m_pcs->getProcessType() == FiniteElement::HEAT_TRANSPORT_BHE)
+    {
+        if (!activefunc)
+            return 16;
+        total_processes[16] = m_pcs;
+        active_processes[16] = &Problem::HeatTransport_BHE;
+        return 16;
+    }
+	
 	std::cout << "Error: no process is specified. " << '\n';
 	return -1;
 }
@@ -783,10 +794,12 @@ inline int Problem::AssignProcessIndex(CRFProcess* m_pcs, bool activefunc)
     6: OVERLAND_FLOW   | 7: AIR_FLOW          | 8: HEAT_TRANSPORT
     9: FLUID_MOMENTUM  |10: RANDOM_WALK       |11: MASS_TRANSPORT
    12: DEFORMATION     |13: PS_GLOBAL         |14: TNEQ              | 15: TES
+   16: HEAT_TRANSPORT_BHE
    Return:
    Programming:
    07/2008 WW
    03/2009 PCH add PS_GLOBAL
+   06/2014 HS added HEAT_TRANSPORT_BHE
    Modification:
    --------------------------------------------------------------------*/
 void Problem::SetActiveProcesses()
@@ -1615,7 +1628,7 @@ void Problem::PostCouplingLoop()
 		// JT: Now done in PreCouplingLoop() // m_pcs->CopyTimestepNODValues(); //MB
 		if(force_post_node_copy){ // JT: safety valve. Set this value to true (in Problem()) and values will be copied here.
 			m_pcs->CopyTimestepNODValues();
-			m_pcs->CopyTimestepELEValues();
+//			m_pcs->CopyTimestepELEValues();
 		}
 	}
 // WW
@@ -3133,6 +3146,35 @@ inline double Problem::HeatTransport()
        REACTINT_vec[0]->Heatpump_2DhTO2Dv_Mapping(true); // Map Heat plume CL to 2D vertical
 
 	return error;
+}
+
+/*-------------------------------------------------------------------------
+GeoSys - Function: HeatTransport_BHE
+Task: Similate heat transport with borehole heat exchanger
+Return: error
+Programming:
+06/2014 HS Extract from HEAT_TRANSPORT();
+Modification:
+-------------------------------------------------------------------------*/
+inline double Problem::HeatTransport_BHE()
+{
+    double error = 1.0e+8;
+    CRFProcess* m_pcs = total_processes[16];
+    if (!m_pcs->selected)
+        return error;             //12.12.2008 WW
+    //CB This is a cheat to map a 2D horizontal heat pump distribution on a vertical model
+    if (REACTINT_vec.size()>0)
+    if (REACTINT_vec[0]->heatpump_2DhTO2Dv)
+        REACTINT_vec[0]->Heatpump_2DhTO2Dv_Mapping(false); // Restore the old solution
+
+    error = m_pcs->ExecuteNonLinear(loop_process_number);
+
+    //CB This is a cheat to map a 2D horizontal heat pump distribution on a vertical model
+    if (REACTINT_vec.size()>0)
+    if (REACTINT_vec[0]->heatpump_2DhTO2Dv)
+        REACTINT_vec[0]->Heatpump_2DhTO2Dv_Mapping(true); // Map Heat plume CL to 2D vertical
+
+    return error;
 }
 
 /*-------------------------------------------------------------------------
