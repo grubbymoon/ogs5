@@ -76,810 +76,848 @@ std::ios::pos_type CSolidProperties::Read(std::ifstream* msp_file)
 
 	//========================================================================
 	// Schleife ueber alle Phasen bzw. Komponenten
-	while (!new_keyword)
-	{
-		//WW new_subkeyword = false;
+    while (!new_keyword)
+    {
+        //WW new_subkeyword = false;
 
-		position = msp_file->tellg();
-		if(!GetLineFromFile(buffer,msp_file))
-			break;
-		line_string = buffer;
-		trim(line_string); //NW
-		trim(line_string, ':'); //NW
-		if(line_string.find(hash) != string::npos)
-		{
-			new_keyword = true;
-			break;
-		}
-		//....................................................................
-		//NAME //OK
-		//subkeyword found
-		if(line_string.find("$NAME") != string::npos)
-		{
-			in_sd.str(GetLineFromFile1(msp_file));
-			in_sd >> name; //sub_line
-			in_sd.clear();
-			continue;
-		}
-		//....................................................................
-		// subkeyword found
-		if(line_string.find("$SWELLING_PRESSURE_TYPE") != string::npos)
-		{
-			in_sd.str(GetLineFromFile1(msp_file));
-			in_sd >> SwellingPressureType;
-			if(SwellingPressureType == 1 || SwellingPressureType == 2)
-			{
-				in_sd >> Max_SwellingPressure;
-				in_sd.clear();
-			}
-			//10.03.2008 WW
-			else if (SwellingPressureType == 3 || SwellingPressureType == 4)
-			{
-				if(!PCSGet("MULTI_PHASE_FLOW") || !PCSGet("RICHARDS_FLOW"))
-				{
-					data_Youngs = new Matrix(9);
-					//! 0: \f$ \kappa_i0     \f$
-					//! 1: \f$ \alpha_i     \f$
-					//! 2: \f$ \kappa_{s0}  \f$
-					//! 3: \f$ \alpha_{sp}  \f$
-					//! 4: \f$ \alpha_{ss}  \f$
-					//! 5: \f$ p_ref        \f$
-					//! 6: \f$ buffer       \f$
-					if (SwellingPressureType == 3)
-						in_sd >> (*data_Youngs)(0) >> (*data_Youngs)(1) >>
-						(*data_Youngs)(2)
-						>> (*data_Youngs)(3) >> (*data_Youngs)(4) >>
-						(*data_Youngs)(5);
-					else if (SwellingPressureType == 4)
-						in_sd >> (*data_Youngs)(0) >> (*data_Youngs)(1) >>
-						(*data_Youngs)(2);
-					in_sd.clear();
-				}
-				else
-				{
-					std::cout <<
-					"No multi-phase flow coupled. The thermal elatic model can only be used in H2 coupled proccess."
-					          << "\n";
-					std::cout << "Quit the simulation now!" << "\n";
-					abort();
-				}
-			}
-		}
-		//....................................................................
-		// subkeyword found
-		if(line_string.find("$DENSITY") != string::npos)
-		{
-			in_sd.str(GetLineFromFile1(msp_file));
-			in_sd >> Density_mode;
-			if(Density_mode == 0) // rho = f(x)
-			{
-				in_sd >> Size;
-				in_sd.clear();
-				data_Density = new Matrix(Size, 2);
-				for(i = 0; i < Size; i++)
-				{
-					in_sd.str(GetLineFromFile1(msp_file));
-					in_sd >> (*data_Density)(i,0) >> (*data_Density)(i,1);
-					in_sd.clear();
-				}
-			}
-			else if(Density_mode == 1) // rho = const
-			{
-				data_Density = new Matrix(1);
-				in_sd >> (*data_Density)(0);
-				in_sd.clear();
-			}
-		}
-		//....................................................................
-		if(line_string.find("$THERMAL") != string::npos)
-		{
-			in_sd.str(GetLineFromFile1(msp_file));
-			in_sd >> sub_line >> ThermalExpansion;
-			in_sd.clear();
-		}
-		//....................................................................
-		// subkeyword found
-		if(line_string.find("CAPACITY") != string::npos)
-		{
-			in_sd.str(GetLineFromFile1(msp_file));
-			in_sd >> Capacity_mode;
-			switch(Capacity_mode)
-			{
-			case 0:       //  = f(x)
-				in_sd >> Size;
-				in_sd.clear();
-				data_Capacity = new Matrix(Size, 2);
-				for(i = 0; i < Size; i++)
-				{
-					in_sd.str(GetLineFromFile1(msp_file));
-					in_sd >> (*data_Capacity)(i,0) >> (*data_Capacity)(i,1);
-					in_sd.clear();
-				}
-				break;
-			case 1:       //  = const
-				data_Capacity = new Matrix(1);
-				in_sd >> (*data_Capacity)(0);
-				in_sd.clear();
-				break;
-			case 2:       // boiling model for rock. WW
-				// 0. Wet capacity
-				// 1. Dry capacity
-				// 2. Boiling temperature
-				// 3. Boiling temperature range
-				// 4. Latent of vaporization
-				data_Capacity = new Matrix(5);
-				for(i = 0; i < 5; i++)
-					in_sd >> (*data_Capacity)(i);
-				in_sd.clear();
-				break;
-			case 3:       // DECOVALEX THM1, Bentonite
-				in_sd.clear();
-				break;
-			case 4:
-				//0. Capacity at density 1
-				//1. Capacity at density 2
-				//2. density 1
-				//3. density 2
-				data_Capacity = new Matrix(5);
-				for(i=0; i<4; i++)
-					in_sd>> (*data_Capacity)(i);
-				in_sd.clear();
-				break;
-				// TES
-			case 5: //Capacity depending on solid conversion
-				//0. Capacity at lower_density_limit (reactive system property)
-				//1. Capacity at upper_density_limit (reactive system property)
-				data_Capacity = new Matrix(3);
-				for(i=0; i<2; i++)
-					in_sd>> (*data_Capacity)(i);
-				in_sd.clear();
-				break;
-			case 6: //Capacity depending on loading with adsorbate
-				//0. Capacity at desorbed state (lower density limit)
-				//1. Capacity of adsorbate
-				data_Capacity = new Matrix(3);
-				for(i=0; i<2; i++)
-					in_sd>> (*data_Capacity)(i);
-				in_sd.clear();
-				break;
-			}
-		}
+        position = msp_file->tellg();
+        if (!GetLineFromFile(buffer, msp_file))
+            break;
+        line_string = buffer;
+        trim(line_string); //NW
+        trim(line_string, ':'); //NW
+        if (line_string.find(hash) != string::npos)
+        {
+            new_keyword = true;
+            break;
+        }
+        //....................................................................
+        //NAME //OK
+        //subkeyword found
+        if (line_string.find("$NAME") != string::npos)
+        {
+            in_sd.str(GetLineFromFile1(msp_file));
+            in_sd >> name; //sub_line
+            in_sd.clear();
+            continue;
+        }
+        //....................................................................
+        // subkeyword found
+        if (line_string.find("$SWELLING_PRESSURE_TYPE") != string::npos)
+        {
+            in_sd.str(GetLineFromFile1(msp_file));
+            in_sd >> SwellingPressureType;
+            if (SwellingPressureType == 1 || SwellingPressureType == 2)
+            {
+                in_sd >> Max_SwellingPressure;
+                in_sd.clear();
+            }
+            //10.03.2008 WW
+            else if (SwellingPressureType == 3 || SwellingPressureType == 4)
+            {
+                if (!PCSGet("MULTI_PHASE_FLOW") || !PCSGet("RICHARDS_FLOW"))
+                {
+                    data_Youngs = new Matrix(9);
+                    //! 0: \f$ \kappa_i0     \f$
+                    //! 1: \f$ \alpha_i     \f$
+                    //! 2: \f$ \kappa_{s0}  \f$
+                    //! 3: \f$ \alpha_{sp}  \f$
+                    //! 4: \f$ \alpha_{ss}  \f$
+                    //! 5: \f$ p_ref        \f$
+                    //! 6: \f$ buffer       \f$
+                    if (SwellingPressureType == 3)
+                        in_sd >> (*data_Youngs)(0) >> (*data_Youngs)(1) >>
+                        (*data_Youngs)(2)
+                        >> (*data_Youngs)(3) >> (*data_Youngs)(4) >>
+                        (*data_Youngs)(5);
+                    else if (SwellingPressureType == 4)
+                        in_sd >> (*data_Youngs)(0) >> (*data_Youngs)(1) >>
+                        (*data_Youngs)(2);
+                    in_sd.clear();
+                }
+                else
+                {
+                    std::cout <<
+                        "No multi-phase flow coupled. The thermal elatic model can only be used in H2 coupled proccess."
+                        << "\n";
+                    std::cout << "Quit the simulation now!" << "\n";
+                    abort();
+                }
+            }
+        }
+        //....................................................................
+        // subkeyword found
+        if (line_string.find("$DENSITY") != string::npos)
+        {
+            in_sd.str(GetLineFromFile1(msp_file));
+            in_sd >> Density_mode;
+            if (Density_mode == 0) // rho = f(x)
+            {
+                in_sd >> Size;
+                in_sd.clear();
+                data_Density = new Matrix(Size, 2);
+                for (i = 0; i < Size; i++)
+                {
+                    in_sd.str(GetLineFromFile1(msp_file));
+                    in_sd >> (*data_Density)(i, 0) >> (*data_Density)(i, 1);
+                    in_sd.clear();
+                }
+            }
+            else if (Density_mode == 1) // rho = const
+            {
+                data_Density = new Matrix(1);
+                in_sd >> (*data_Density)(0);
+                in_sd.clear();
+            }
+            else if (Density_mode == 6) // this is a model for soil + ice
+            {
+                // rho1 = soil density, rho2 = ice density
+                data_Density = new Matrix(2);
+                in_sd >> (*data_Density)(0); // soil density
+                in_sd >> (*data_Density)(1); // ice density
+                in_sd.clear();
+            }
+        }
+        //....................................................................
+        if (line_string.find("$THERMAL") != string::npos)
+        {
+            in_sd.str(GetLineFromFile1(msp_file));
+            in_sd >> sub_line >> ThermalExpansion;
+            in_sd.clear();
+        }
+        //....................................................................
+        // subkeyword found
+        if (line_string.find("CAPACITY") != string::npos)
+        {
+            in_sd.str(GetLineFromFile1(msp_file));
+            in_sd >> Capacity_mode;
+            switch (Capacity_mode)
+            {
+            case 0:       //  = f(x)
+                in_sd >> Size;
+                in_sd.clear();
+                data_Capacity = new Matrix(Size, 2);
+                for (i = 0; i < Size; i++)
+                {
+                    in_sd.str(GetLineFromFile1(msp_file));
+                    in_sd >> (*data_Capacity)(i, 0) >> (*data_Capacity)(i, 1);
+                    in_sd.clear();
+                }
+                break;
+            case 1:       //  = const
+                data_Capacity = new Matrix(1);
+                in_sd >> (*data_Capacity)(0);
+                in_sd.clear();
+                break;
+            case 2:       // boiling model for rock. WW
+                // 0. Wet capacity
+                // 1. Dry capacity
+                // 2. Boiling temperature
+                // 3. Boiling temperature range
+                // 4. Latent of vaporization
+                data_Capacity = new Matrix(5);
+                for (i = 0; i < 5; i++)
+                    in_sd >> (*data_Capacity)(i);
+                in_sd.clear();
+                break;
+            case 3:       // DECOVALEX THM1, Bentonite
+                in_sd.clear();
+                break;
+            case 4:
+                //0. Capacity at density 1
+                //1. Capacity at density 2
+                //2. density 1
+                //3. density 2
+                data_Capacity = new Matrix(5);
+                for (i = 0; i < 4; i++)
+                    in_sd >> (*data_Capacity)(i);
+                in_sd.clear();
+                break;
+                // TES
+            case 5: //Capacity depending on solid conversion
+                //0. Capacity at lower_density_limit (reactive system property)
+                //1. Capacity at upper_density_limit (reactive system property)
+                data_Capacity = new Matrix(3);
+                for (i = 0; i < 2; i++)
+                    in_sd >> (*data_Capacity)(i);
+                in_sd.clear();
+                break;
+            case 6: //Capacity depending on loading with adsorbate
+                //0. Capacity at desorbed state (lower density limit)
+                //1. Capacity of adsorbate
+                data_Capacity = new Matrix(3);
+                for (i = 0; i < 2; i++)
+                    in_sd >> (*data_Capacity)(i);
+                in_sd.clear();
+                break;
+            case 7:  // soil and ice heat capacity
+                data_Capacity = new Matrix(2);
+                in_sd >> (*data_Capacity)(0);
+                in_sd >> (*data_Capacity)(1);
+                in_sd.clear();
+                break;
 
-		//....................................................................
-		// subkeyword found
-		if(line_string.compare("CONDUCTIVITY") == 0)
-		{
-			in_sd.str(GetLineFromFile1(msp_file));
-			in_sd >> Conductivity_mode;
-			switch(Conductivity_mode)
-			{
-			case 0:       //  = f(T) //21.12.2009 WW
-				in_sd >> Size;
-				in_sd.clear();
-				data_Conductivity = new Matrix(Size, 2);
-				for(i = 0; i < Size; i++)
-				{
-					in_sd.str(GetLineFromFile1(msp_file));
-					in_sd >>
-					(*data_Conductivity)(i,
-					                     0) >> (*data_Conductivity)(i,1);
-					in_sd.clear();
-				}
-				//WW
-				conductivity_pcs_name_vector.push_back("TEMPERATURE1");
-				break;
-			case 1:       //  = const
-				data_Conductivity = new Matrix(1);
-				in_sd >> (*data_Conductivity)(0);
-				in_sd.clear();
-				break;
-			case 2:       // boiling model for rock. WW
-				// 0. Wet conductivity
-				// 1. Dry conductivity
-				// 2. Boiling temperature
-				// 3. Boiling temperature range
-				data_Conductivity = new Matrix(4);
-				for(i = 0; i < 4; i++)
-					in_sd >> (*data_Conductivity)(i);
-				in_sd.clear();
-				capacity_pcs_name_vector.push_back("TEMPERATURE1");
-				capacity_pcs_name_vector.push_back("SATURATION1");
-				break;
-			case 3:       // DECOVALEX THM1, Bentonite
-				in_sd.clear();
-				capacity_pcs_name_vector.push_back("TEMPERATURE1");
-				capacity_pcs_name_vector.push_back("SATURATION1");
-				break;
-			case 30:       // another model for bentonite. WW
-				// 0. maximum conductivity
-				// 1. minimum conductivity
-				// 2. saturation
-				data_Conductivity = new Matrix(3);
-				for(i = 0; i < 3; i++)
-					in_sd >> (*data_Conductivity)(i);
-				in_sd.clear();
-				capacity_pcs_name_vector.push_back("SATURATION1");
-				break;
-			case 4:       //  = f(S) //21.12.2009 WW
-				in_sd >> Size;
-				in_sd.clear();
-				data_Conductivity = new Matrix(Size, 2);
-				for(i = 0; i < Size; i++)
-				{
-					in_sd.str(GetLineFromFile1(msp_file));
-					in_sd >>
-					(*data_Conductivity)(i,
-					                     0) >> (*data_Conductivity)(i,1);
-					in_sd.clear();
-				}
-				break;
-			case 5:       // DECOVALEX2015, Task B2, Buffer: f(S,T) by matrix function
-				in_sd >> T_0;
-				in_sd.clear();
-				conductivity_pcs_name_vector.push_back("TEMPERATURE1");
- 				conductivity_pcs_name_vector.push_back("SATURATION1");
-				break;
-			}
-			in_sd.clear();
-		}
+            }
+        }
 
-		//....................................................................
-		if(line_string.find("CONDUCTIVITY_TENSOR") != string::npos) //subkeyword found
-		{
-			in_sd.str(GetLineFromFile1(msp_file));
-			in_sd >> thermal_conductivity_tensor_type_name;
-			thermal_conductivity_tensor_dim = 0; //NW
-			switch(thermal_conductivity_tensor_type_name[0])
-			{
-			case 'I': // isotropic
-				thermal_conductivity_tensor_type = 0;
-				in_sd >> thermal_conductivity_tensor[0];
-				thermal_conductivity_tensor[1] = thermal_conductivity_tensor[2] =
-				                                         thermal_conductivity_tensor
-				                                         [0];
-				break;
-			case 'O':      // orthotropic
-				thermal_conductivity_tensor_type = 1;
-				in_sd >> thermal_conductivity_tensor_dim;
-				if(thermal_conductivity_tensor_dim == 0)
-					std::cout <<
-					"Error in CSolidProperties::Read: no tensor dimension"
-					          << "\n";
-				if(thermal_conductivity_tensor_dim == 2)
-				{
-					in_sd >> thermal_conductivity_tensor[0];
-					in_sd >> thermal_conductivity_tensor[1];
-				}
-				if(thermal_conductivity_tensor_dim == 3)
-				{
-					in_sd >> thermal_conductivity_tensor[0];
-					in_sd >> thermal_conductivity_tensor[1];
-					in_sd >> thermal_conductivity_tensor[2];
-				}
-				break;
-			case 'A':      // anisotropic
-				thermal_conductivity_tensor_type = 2;
-				in_sd >> thermal_conductivity_tensor_dim;
-				if(thermal_conductivity_tensor_dim == 0)
-					std::cout <<
-					"Error in CSolidProperties::Read: no tensor dimension"
-					          << "\n";
-				if(thermal_conductivity_tensor_dim == 2)
-				{
-					in_sd >> thermal_conductivity_tensor[0];
-					in_sd >> thermal_conductivity_tensor[1];
-					in_sd >> thermal_conductivity_tensor[2];
-					in_sd >> thermal_conductivity_tensor[3];
-				}
-				if(thermal_conductivity_tensor_dim == 3)
-				{
-					in_sd >> thermal_conductivity_tensor[0];
-					in_sd >> thermal_conductivity_tensor[1];
-					in_sd >> thermal_conductivity_tensor[2];
-					in_sd >> thermal_conductivity_tensor[3];
-					in_sd >> thermal_conductivity_tensor[4];
-					in_sd >> thermal_conductivity_tensor[5];
-					in_sd >> thermal_conductivity_tensor[6];
-					in_sd >> thermal_conductivity_tensor[7];
-					in_sd >> thermal_conductivity_tensor[8];
-				}
-				break;
-			default:
-				cout <<
-				"Error in CSolidProperties::Read: no valid thermal conductivity tensor type"
-				     << "\n";
-				break;
-			}
-			in_sd.clear();
-		}
+            //....................................................................
+            // subkeyword found
+            if (line_string.find("LATENT_HEAT") != string::npos)
+            {
+                in_sd.str(GetLineFromFile1(msp_file));
+                in_sd >> freezing_latent_heat; // TYZ: 2015.02.27. Latent heat for freezing J/kg	
+            }
 
-		//....................................................................
-		// subkeyword found
-		if(line_string.find("$ELASTICITY") != string::npos)
-		{
-			in_sd.str(GetLineFromFile1(msp_file));
-			in_sd >> sub_line >> PoissonRatio;
-			in_sd.clear();
-		}
-		//....................................................................
-		//12.2009. WW
-		if(line_string.find("$EXCAVATION") != string::npos)
-		{
-			in_sd.str(GetLineFromFile1(msp_file));
-			in_sd >> excavation;
-			in_sd.clear();
-		}
-		//....................................................................
-		if(line_string.find("YOUNGS_MODULUS") != string::npos)
-		{                         // subkeyword found
-			in_sd.str(GetLineFromFile1(msp_file));
-			in_sd >> Youngs_mode;
-			int type = Youngs_mode;
-			if(type > 9 && type < 14)
-				type = 1000;
-			switch(type)  // 15.03.2008 WW
-			{
-			case 0:       //  = f(x)
-				in_sd >> Size;
-				in_sd.clear();
-				data_Youngs = new Matrix(Size, 2);
-				for(i = 0; i < Size; i++)
-				{
-					in_sd.str(GetLineFromFile1(msp_file));
-					in_sd >> (*data_Youngs)(i,0) >> (*data_Youngs)(i,1);
-					in_sd.clear();
-				}
-				break;
-			case 1:       //  = const
-				data_Youngs = new Matrix(1);
-				in_sd >> (*data_Youngs)(0);
-				in_sd.clear();
-				break; // UJG 24.11.2009
-			case 2:       //  = const
-				// data_Youngs Lubby1 model
-				//  0: E_0
-				//  1: a (factor)
-				//  2: n (exponent)
-				data_Youngs = new Matrix(3);
-				in_sd >> (*data_Youngs)(0) >> (*data_Youngs)(1) >> (*data_Youngs)(2);
-				in_sd.clear();
-				break;
-			case 1000:    // case 10-13: transverse isotropic linear elasticity (UJG 24.11.2009)
-				// data_Youngs transverse isotropic linear elasticity
-				//  0: E_i     (Young's modulus of the plane of isotropy)
-				//  1: E_a     (Young's modulus w.r.t. the anisotropy direction)
-				//  2: nu_{ia} (Poisson's ratio w.r.t. the anisotropy direction)
-				//  3: G_a     (shear modulus w.r.t. the anisotropy direction)
-				//  4: n_x     (x-coefficient of the local axis of anisotropy (2D case: -\sin\phi))
-				//  5: n_y     (y-coefficient of the local axis of anisotropy (2D case: \cos\phi))
-				//  6: n_z     (z-coefficient of the local axis of anisotropy (2D case: 0))
-				data_Youngs = new Matrix(7);
-				in_sd >> (*data_Youngs)(0) >> (*data_Youngs)(1) >>
-				(*data_Youngs)(2) >> (*data_Youngs)(3)
-				>> (*data_Youngs)(4) >> (*data_Youngs)(5) >> (*data_Youngs)(6);
-				in_sd.clear();
-				break;
-			}
-		}
-		//....................................................................
-		//WX:06.2012 E_Function
-		if(line_string.find("$E_Function")!=string::npos)
-		{
-			in_sd.str(GetLineFromFile1(msp_file));
-			in_sd>>E_Function_Model>>E_Function_Model_Value[0];
-			in_sd.clear();
-		}
-		//Time dependent YOUNGS POISSON
-		if(line_string.find("$TIME_DEPENDENT_YOUNGS_POISSON")!=string::npos)
-		{
-			in_sd.str(GetLineFromFile1(msp_file));
-			in_sd>>Time_Dependent_E_nv_mode;
-			switch(Time_Dependent_E_nv_mode)
-			{
-			case 1://isotropic
-				in_sd>>Time_Dependent_E_nv_value[0]>>Time_Dependent_E_nv_value[1];//[0] for E, [1] for nv
-				break;
-			case 2://transversely isotropic
-				in_sd>>Time_Dependent_E_nv_value[0]>>Time_Dependent_E_nv_value[1]>>Time_Dependent_E_nv_value[2]>>
-					Time_Dependent_E_nv_value[3]>>Time_Dependent_E_nv_value[4];
-				//[0]: Ei, [1]: Ea, [2]: ni, [3]: Eia, [4]: Ga
-				break;
-			default:
-				cout<<"!ERROR in msp file, no valid TIME_DEPENDENT_YOUNG_POISSON mode!"<<endl;
-				break;
-			}
-			in_sd.clear();
-		}
-		//....................................................................
-		if(line_string.find("$CREEP") != string::npos)
-		{
-			if(line_string.find("NORTON") != string::npos)
-			{
-				Creep_mode = 1;
-				/*! \subsection Norton creep model */
-				/*! \f$\dot\epsilon_s=A \left(\frac{\sigma_v}{\sigma^\ast}\right)^n\f$ */
-				// data_Creep:
-				//  0: A,   coefficient
-				//  1: n,   exponential
-				data_Creep = new Matrix(2);
-				in_sd.str(GetLineFromFile1(msp_file));
-				in_sd >> (*data_Creep)(0);
-				in_sd >> (*data_Creep)(1);
-				in_sd.clear();
-			}
-			if(line_string.find("BGRA") != string::npos)
-			{
-				Creep_mode = 2;
-				/*! \subsection Temperature dependent creep model by BGR */
-				/*! \f$\dot\epsilon_s=A\exp^{-Q/RT}\left(\frac{\sigma_v}{\sigma^\ast}\right)^n\f$ */
-				// data_Creep:
-				//  0: A,   coefficient
-				//  1: n,   exponential
-				//  2: Q,   activation energy
-				data_Creep = new Matrix(3);
-				in_sd.str(GetLineFromFile1(msp_file));
-				in_sd >> (*data_Creep)(0);
-				in_sd >> (*data_Creep)(1);
-				in_sd >> (*data_Creep)(2);
-				in_sd.clear();
-			}
-			//TN..................................................................
-			if(line_string.find("BGRB")!=string::npos)
-			{
-				Creep_mode=3;
-				// data_Creep:
-				//  0: A1,  coefficient A1
-				//  1: n1,   exponential n1
-				//  2: Q1,   activation energy Q1
-				//  3: A2,  coefficient A2
-				//  4: n2,  coefficient n2
-				//  5: Q2,  activation energy Q2
-				data_Creep = new Matrix(6);
-				in_sd.str(GetLineFromFile1(msp_file));
-				in_sd>>(*data_Creep)(0);
-				in_sd>>(*data_Creep)(1);
-				in_sd>>(*data_Creep)(2);
-				in_sd>>(*data_Creep)(3);
-				in_sd>>(*data_Creep)(4);
-				in_sd>>(*data_Creep)(5);
-				in_sd.clear();
-			}
-			if(line_string.find("BGRSF")!=string::npos)
-			{
-				Creep_mode=4;
-				// data_Creep:
-				//  0: A,   coefficient A
-				//  1: n,   exponential
-				//  2: Q,   activation energy
-				//  3: C,   coefficient C
-				data_Creep = new Matrix(4);
-				in_sd.str(GetLineFromFile1(msp_file));
-				in_sd>>(*data_Creep)(0);
-				in_sd>>(*data_Creep)(1);
-				in_sd>>(*data_Creep)(2);
-				in_sd>>(*data_Creep)(3);
-				in_sd.clear();
-			}
-			//....................................................................
-			if(line_string.find("LUBBY2") != string::npos)
-			{
-				Creep_mode = 1000;
-				// data_Creep:
-				//  0: eta_m
-				//  1: m
-				//  2: l
-				//  3: eta_k
-				//  4: k1
-				//  5: k2
-				//  6: G_k
-				data_Creep = new Matrix(7,2);
-				in_sd.str(GetLineFromFile1(msp_file));
-				for(i = 0; i < 7; i++)
-					in_sd >> (*data_Creep)(i,0);
-				in_sd.clear();
-			}
-		}
-		//WX:10.2012, threshold dev. stress for Lubby2
-		if(line_string.find("$THRESHOLD_DEV_STR")!=string::npos)
-		{
-			in_sd.str(GetLineFromFile1(msp_file));
-			in_sd>>threshold_dev_str;
-			in_sd.clear();
-		}
-		//....................................................................
-		if(line_string.find("$BIOT_CONSTANT") != string::npos)
-		{
-			in_sd.str(GetLineFromFile1(msp_file));
-			in_sd >> biot_const;
-			in_sd.clear();
-		}
-		//....................................................................
-		if(line_string.find("$SOLID_BULK_MODULUS") != string::npos)//WX: 04.2013
-		{
-			in_sd.str(GetLineFromFile1(msp_file));
-			in_sd >> Ks;
-			in_sd.clear();
-		}
-		//....................................................................
-		if(line_string.find("BISHOP_COEFFICIENT") != string::npos) //WX
-		{
-			in_sd.str(GetLineFromFile1(msp_file));
-			in_sd >> bishop_model;
-			switch(bishop_model)
-			{
-			case 1: //constant
-				in_sd >> bishop_model_value;
-				break;
-			case 2: //pow(Se, parameter)
-				in_sd >> bishop_model_value;
-				break;
-			case 3:              // JM model 3:    if p<bishop_model_value -> bishop_parameter=0.0;  else -> bishop_parameter=1.0
-				in_sd >> bishop_model_value;
-				break;
-			default:
-				break;
-			}
-			in_sd.clear();
-		}
-		//....................................................................
-		if(line_string.find("$STRESS_INTEGRATION_TOLERANCE") != string::npos)
-		{
-			in_sd.str(GetLineFromFile1(msp_file));
-			in_sd >> f_tol >> s_tol;
-			in_sd.clear();
-		}
-		if(line_string.find("$STRESS_UNIT") != string::npos)
-		{
-			in_sd.str(GetLineFromFile1(msp_file));
-			in_sd >> sub_line;
-			if(sub_line.compare("MegaPascal") == 0)
-				grav_const = 9.81e-6;
-			else if(sub_line.find("KiloPascal") == 0)
-				grav_const = 9.81e-3;
-			in_sd.clear();
-		}
-		//WX:08.2011 define gravity constant
-		if(line_string.find("$GRAVITY_CONSTANT")!=string::npos)
-		{
-			in_sd.str(GetLineFromFile1(msp_file));
-			in_sd>>grav_const;
-			in_sd.clear();
-		}
-		//....................................................................
-		// subkeyword found
-		if(line_string.find("$PLASTICITY") != string::npos)
-		{
-			in_sd.str(GetLineFromFile1(msp_file));
-			in_sd >> sub_line;
-			in_sd.clear();
-			if(sub_line.find("DRUCKER-PRAGER") != string::npos)
-			{
-				devS = new double[6];
-				Plasticity_type = 1;
-				// No return mapping
-				if(sub_line.find("NORETURNMAPPING") != string::npos)
-				{
-					Plasticity_type = 10;
-					if (sub_line.find("TENSIONCUTOFF") != string::npos) //WX: 08.2010
-					{
-						Plasticity_type = 11;
-						dFtds = new double[6]; //WX: 08.2010 Tensile yield function
-						dGtds = new double[6];
-						ConstitutiveMatrix = new Matrix(6,6); //WX: 08.2010
-					}
-					dFds = new double[6];
-					dGds = new double[6];
-					D_dFds = new double[6];
-					D_dGds = new double[6];
-				}
-				Size = 5;
-				if(Plasticity_type == 11)
-					Size = 6;
-				/*
-				   Material parameters for Cam-Clay model
-				   i : parameter
-				   0 : The initial yield stress
-				   1 : Plastic hardening parameter
-				   2 : Internal frection angle
-				   3 : Dilatancy angle
-				   4 : Localized softening modulus
-				   5 : Tensile strength //WX
-				 */
-			}
-			else if(sub_line.find("SINGLE_YIELD_SURFACE") != string::npos)
-			{
-				Plasticity_type = 2;
-				Size = 23;
-				AllocateMemoryforSYS();
-				/*
-				   Material parameters for Single yield surface model
-				   i: parameter
-				   0: alpha0
-				   1: beta0
-				   2: delta0
-				   3: epsilon0
-				   4: kappa0
-				   5: gamma0
-				   6: m0
+            //....................................................................
+            // subkeyword found
+            if (line_string.find("FREEZING_SIGMOID_COEFFICENT") != string::npos)
+            {
+                in_sd.str(GetLineFromFile1(msp_file));
+                in_sd >> freezing_sigmoid_coeff; // TYZ: 2015.02.27. sigmoid coefficient for freezing unitless
+            }
 
-				   7: alpha1
-				   8: beta1
-				   9: delta1
-				   10: epsilon1
-				   11: kappa1
-				   12: gamma1
-				   13: m1
+            //....................................................................
+            // subkeyword found
+            if (line_string.compare("CONDUCTIVITY") == 0)
+            {
+                in_sd.str(GetLineFromFile1(msp_file));
+                in_sd >> Conductivity_mode;
+                switch (Conductivity_mode)
+                {
+                case 0:       //  = f(T) //21.12.2009 WW
+                    in_sd >> Size;
+                    in_sd.clear();
+                    data_Conductivity = new Matrix(Size, 2);
+                    for (i = 0; i < Size; i++)
+                    {
+                        in_sd.str(GetLineFromFile1(msp_file));
+                        in_sd >>
+                            (*data_Conductivity)(i,
+                                0) >> (*data_Conductivity)(i, 1);
+                        in_sd.clear();
+                    }
+                    //WW
+                    conductivity_pcs_name_vector.push_back("TEMPERATURE1");
+                    break;
+                case 1:       //  = const
+                    data_Conductivity = new Matrix(1);
+                    in_sd >> (*data_Conductivity)(0);
+                    in_sd.clear();
+                    break;
+                case 2:       // boiling model for rock. WW
+                    // 0. Wet conductivity
+                    // 1. Dry conductivity
+                    // 2. Boiling temperature
+                    // 3. Boiling temperature range
+                    data_Conductivity = new Matrix(4);
+                    for (i = 0; i < 4; i++)
+                        in_sd >> (*data_Conductivity)(i);
+                    in_sd.clear();
+                    capacity_pcs_name_vector.push_back("TEMPERATURE1");
+                    capacity_pcs_name_vector.push_back("SATURATION1");
+                    break;
+                case 3:       // DECOVALEX THM1, Bentonite
+                    in_sd.clear();
+                    capacity_pcs_name_vector.push_back("TEMPERATURE1");
+                    capacity_pcs_name_vector.push_back("SATURATION1");
+                    break;
+                case 30:       // another model for bentonite. WW
+                    // 0. maximum conductivity
+                    // 1. minimum conductivity
+                    // 2. saturation
+                    data_Conductivity = new Matrix(3);
+                    for (i = 0; i < 3; i++)
+                        in_sd >> (*data_Conductivity)(i);
+                    in_sd.clear();
+                    capacity_pcs_name_vector.push_back("SATURATION1");
+                    break;
+                case 4:       //  = f(S) //21.12.2009 WW
+                    in_sd >> Size;
+                    in_sd.clear();
+                    data_Conductivity = new Matrix(Size, 2);
+                    for (i = 0; i < Size; i++)
+                    {
+                        in_sd.str(GetLineFromFile1(msp_file));
+                        in_sd >>
+                            (*data_Conductivity)(i,
+                                0) >> (*data_Conductivity)(i, 1);
+                        in_sd.clear();
+                    }
+                    break;
+                case 5:       // DECOVALEX2015, Task B2, Buffer: f(S,T) by matrix function
+                    in_sd >> T_0;
+                    in_sd.clear();
+                    conductivity_pcs_name_vector.push_back("TEMPERATURE1");
+                    conductivity_pcs_name_vector.push_back("SATURATION1");
+                    break;
+                case 7:       //  thermal conductivity soil and ice 
+                    data_Conductivity = new Matrix(3);
+                    in_sd >> (*data_Conductivity)(0); // soild lambda
+                    in_sd >> (*data_Conductivity)(1); // ice lambda
+                    in_sd >> (*data_Conductivity)(2); // water lambda
+                    in_sd.clear();
+                    break;
+                } // end of switch case
+                in_sd.clear();
+            } // end of if
 
-				   14: Psi1
-				   15: Psi2
+            //....................................................................
+            if (line_string.find("CONDUCTIVITY_TENSOR") != string::npos) //subkeyword found
+            {
+                in_sd.str(GetLineFromFile1(msp_file));
+                in_sd >> thermal_conductivity_tensor_type_name;
+                thermal_conductivity_tensor_dim = 0; //NW
+                switch (thermal_conductivity_tensor_type_name[0])
+                {
+                case 'I': // isotropic
+                    thermal_conductivity_tensor_type = 0;
+                    in_sd >> thermal_conductivity_tensor[0];
+                    thermal_conductivity_tensor[1] = thermal_conductivity_tensor[2] =
+                        thermal_conductivity_tensor
+                        [0];
+                    break;
+                case 'O':      // orthotropic
+                    thermal_conductivity_tensor_type = 1;
+                    in_sd >> thermal_conductivity_tensor_dim;
+                    if (thermal_conductivity_tensor_dim == 0)
+                        std::cout <<
+                        "Error in CSolidProperties::Read: no tensor dimension"
+                        << "\n";
+                    if (thermal_conductivity_tensor_dim == 2)
+                    {
+                        in_sd >> thermal_conductivity_tensor[0];
+                        in_sd >> thermal_conductivity_tensor[1];
+                    }
+                    if (thermal_conductivity_tensor_dim == 3)
+                    {
+                        in_sd >> thermal_conductivity_tensor[0];
+                        in_sd >> thermal_conductivity_tensor[1];
+                        in_sd >> thermal_conductivity_tensor[2];
+                    }
+                    break;
+                case 'A':      // anisotropic
+                    thermal_conductivity_tensor_type = 2;
+                    in_sd >> thermal_conductivity_tensor_dim;
+                    if (thermal_conductivity_tensor_dim == 0)
+                        std::cout <<
+                        "Error in CSolidProperties::Read: no tensor dimension"
+                        << "\n";
+                    if (thermal_conductivity_tensor_dim == 2)
+                    {
+                        in_sd >> thermal_conductivity_tensor[0];
+                        in_sd >> thermal_conductivity_tensor[1];
+                        in_sd >> thermal_conductivity_tensor[2];
+                        in_sd >> thermal_conductivity_tensor[3];
+                    }
+                    if (thermal_conductivity_tensor_dim == 3)
+                    {
+                        in_sd >> thermal_conductivity_tensor[0];
+                        in_sd >> thermal_conductivity_tensor[1];
+                        in_sd >> thermal_conductivity_tensor[2];
+                        in_sd >> thermal_conductivity_tensor[3];
+                        in_sd >> thermal_conductivity_tensor[4];
+                        in_sd >> thermal_conductivity_tensor[5];
+                        in_sd >> thermal_conductivity_tensor[6];
+                        in_sd >> thermal_conductivity_tensor[7];
+                        in_sd >> thermal_conductivity_tensor[8];
+                    }
+                    break;
+                default:
+                    cout <<
+                        "Error in CSolidProperties::Read: no valid thermal conductivity tensor type"
+                        << "\n";
+                    break;
+                }
+                in_sd.clear();
+            } // end of if line
 
-				   16: Ch
-				   17: Cd
-				   18: br
-				   19: mr
+            //....................................................................
+            // subkeyword found
+            if (line_string.find("$ELASTICITY") != string::npos)
+            {
+                in_sd.str(GetLineFromFile1(msp_file));
+                in_sd >> sub_line >> PoissonRatio;
+                in_sd.clear();
+            }
+            //....................................................................
+            //12.2009. WW
+            if (line_string.find("$EXCAVATION") != string::npos)
+            {
+                in_sd.str(GetLineFromFile1(msp_file));
+                in_sd >> excavation;
+                in_sd.clear();
+            }
+            //....................................................................
+            if (line_string.find("YOUNGS_MODULUS") != string::npos)
+            {                         // subkeyword found
+                in_sd.str(GetLineFromFile1(msp_file));
+                in_sd >> Youngs_mode;
+                int type = Youngs_mode;
+                if (type > 9 && type < 14)
+                    type = 1000;
+                switch (type)  // 15.03.2008 WW
+                {
+                case 0:       //  = f(x)
+                    in_sd >> Size;
+                    in_sd.clear();
+                    data_Youngs = new Matrix(Size, 2);
+                    for (i = 0; i < Size; i++)
+                    {
+                        in_sd.str(GetLineFromFile1(msp_file));
+                        in_sd >> (*data_Youngs)(i, 0) >> (*data_Youngs)(i, 1);
+                        in_sd.clear();
+                    }
+                    break;
+                case 1:       //  = const
+                    data_Youngs = new Matrix(1);
+                    in_sd >> (*data_Youngs)(0);
+                    in_sd.clear();
+                    break; // UJG 24.11.2009
+                case 2:       //  = const
+                    // data_Youngs Lubby1 model
+                    //  0: E_0
+                    //  1: a (factor)
+                    //  2: n (exponent)
+                    data_Youngs = new Matrix(3);
+                    in_sd >> (*data_Youngs)(0) >> (*data_Youngs)(1) >> (*data_Youngs)(2);
+                    in_sd.clear();
+                    break;
+                case 1000:    // case 10-13: transverse isotropic linear elasticity (UJG 24.11.2009)
+                    // data_Youngs transverse isotropic linear elasticity
+                    //  0: E_i     (Young's modulus of the plane of isotropy)
+                    //  1: E_a     (Young's modulus w.r.t. the anisotropy direction)
+                    //  2: nu_{ia} (Poisson's ratio w.r.t. the anisotropy direction)
+                    //  3: G_a     (shear modulus w.r.t. the anisotropy direction)
+                    //  4: n_x     (x-coefficient of the local axis of anisotropy (2D case: -\sin\phi))
+                    //  5: n_y     (y-coefficient of the local axis of anisotropy (2D case: \cos\phi))
+                    //  6: n_z     (z-coefficient of the local axis of anisotropy (2D case: 0))
+                    data_Youngs = new Matrix(7);
+                    in_sd >> (*data_Youngs)(0) >> (*data_Youngs)(1) >>
+                        (*data_Youngs)(2) >> (*data_Youngs)(3)
+                        >> (*data_Youngs)(4) >> (*data_Youngs)(5) >> (*data_Youngs)(6);
+                    in_sd.clear();
+                    break;
+                }
+            }
+            //....................................................................
+            //WX:06.2012 E_Function
+            if (line_string.find("$E_Function") != string::npos)
+            {
+                in_sd.str(GetLineFromFile1(msp_file));
+                in_sd >> E_Function_Model >> E_Function_Model_Value[0];
+                in_sd.clear();
+            }
+            //Time dependent YOUNGS POISSON
+            if (line_string.find("$TIME_DEPENDENT_YOUNGS_POISSON") != string::npos)
+            {
+                in_sd.str(GetLineFromFile1(msp_file));
+                in_sd >> Time_Dependent_E_nv_mode;
+                switch (Time_Dependent_E_nv_mode)
+                {
+                case 1://isotropic
+                    in_sd >> Time_Dependent_E_nv_value[0] >> Time_Dependent_E_nv_value[1];//[0] for E, [1] for nv
+                    break;
+                case 2://transversely isotropic
+                    in_sd >> Time_Dependent_E_nv_value[0] >> Time_Dependent_E_nv_value[1] >> Time_Dependent_E_nv_value[2] >>
+                        Time_Dependent_E_nv_value[3] >> Time_Dependent_E_nv_value[4];
+                    //[0]: Ei, [1]: Ea, [2]: ni, [3]: Eia, [4]: Ga
+                    break;
+                default:
+                    cout << "!ERROR in msp file, no valid TIME_DEPENDENT_YOUNG_POISSON mode!" << endl;
+                    break;
+                }
+                in_sd.clear();
+            }
+            //....................................................................
+            if (line_string.find("$CREEP") != string::npos)
+            {
+                if (line_string.find("NORTON") != string::npos)
+                {
+                    Creep_mode = 1;
+                    /*! \subsection Norton creep model */
+                    /*! \f$\dot\epsilon_s=A \left(\frac{\sigma_v}{\sigma^\ast}\right)^n\f$ */
+                    // data_Creep:
+                    //  0: A,   coefficient
+                    //  1: n,   exponential
+                    data_Creep = new Matrix(2);
+                    in_sd.str(GetLineFromFile1(msp_file));
+                    in_sd >> (*data_Creep)(0);
+                    in_sd >> (*data_Creep)(1);
+                    in_sd.clear();
+                }
+                if (line_string.find("BGRA") != string::npos)
+                {
+                    Creep_mode = 2;
+                    /*! \subsection Temperature dependent creep model by BGR */
+                    /*! \f$\dot\epsilon_s=A\exp^{-Q/RT}\left(\frac{\sigma_v}{\sigma^\ast}\right)^n\f$ */
+                    // data_Creep:
+                    //  0: A,   coefficient
+                    //  1: n,   exponential
+                    //  2: Q,   activation energy
+                    data_Creep = new Matrix(3);
+                    in_sd.str(GetLineFromFile1(msp_file));
+                    in_sd >> (*data_Creep)(0);
+                    in_sd >> (*data_Creep)(1);
+                    in_sd >> (*data_Creep)(2);
+                    in_sd.clear();
+                }
+                //TN..................................................................
+                if (line_string.find("BGRB") != string::npos)
+                {
+                    Creep_mode = 3;
+                    // data_Creep:
+                    //  0: A1,  coefficient A1
+                    //  1: n1,   exponential n1
+                    //  2: Q1,   activation energy Q1
+                    //  3: A2,  coefficient A2
+                    //  4: n2,  coefficient n2
+                    //  5: Q2,  activation energy Q2
+                    data_Creep = new Matrix(6);
+                    in_sd.str(GetLineFromFile1(msp_file));
+                    in_sd >> (*data_Creep)(0);
+                    in_sd >> (*data_Creep)(1);
+                    in_sd >> (*data_Creep)(2);
+                    in_sd >> (*data_Creep)(3);
+                    in_sd >> (*data_Creep)(4);
+                    in_sd >> (*data_Creep)(5);
+                    in_sd.clear();
+                }
+                if (line_string.find("BGRSF") != string::npos)
+                {
+                    Creep_mode = 4;
+                    // data_Creep:
+                    //  0: A,   coefficient A
+                    //  1: n,   exponential
+                    //  2: Q,   activation energy
+                    //  3: C,   coefficient C
+                    data_Creep = new Matrix(4);
+                    in_sd.str(GetLineFromFile1(msp_file));
+                    in_sd >> (*data_Creep)(0);
+                    in_sd >> (*data_Creep)(1);
+                    in_sd >> (*data_Creep)(2);
+                    in_sd >> (*data_Creep)(3);
+                    in_sd.clear();
+                }
+                //....................................................................
+                if (line_string.find("LUBBY2") != string::npos)
+                {
+                    Creep_mode = 1000;
+                    // data_Creep:
+                    //  0: eta_m
+                    //  1: m
+                    //  2: l
+                    //  3: eta_k
+                    //  4: k1
+                    //  5: k2
+                    //  6: G_k
+                    data_Creep = new Matrix(7, 2);
+                    in_sd.str(GetLineFromFile1(msp_file));
+                    for (i = 0; i < 7; i++)
+                        in_sd >> (*data_Creep)(i, 0);
+                    in_sd.clear();
+                }
+            }
+            //WX:10.2012, threshold dev. stress for Lubby2
+            if (line_string.find("$THRESHOLD_DEV_STR") != string::npos)
+            {
+                in_sd.str(GetLineFromFile1(msp_file));
+                in_sd >> threshold_dev_str;
+                in_sd.clear();
+            }
+            //....................................................................
+            if (line_string.find("$BIOT_CONSTANT") != string::npos)
+            {
+                in_sd.str(GetLineFromFile1(msp_file));
+                in_sd >> biot_const;
+                in_sd.clear();
+            }
+            //....................................................................
+            if (line_string.find("$SOLID_BULK_MODULUS") != string::npos)//WX: 04.2013
+            {
+                in_sd.str(GetLineFromFile1(msp_file));
+                in_sd >> Ks;
+                in_sd.clear();
+            }
+            //....................................................................
+            if (line_string.find("BISHOP_COEFFICIENT") != string::npos) //WX
+            {
+                in_sd.str(GetLineFromFile1(msp_file));
+                in_sd >> bishop_model;
+                switch (bishop_model)
+                {
+                case 1: //constant
+                    in_sd >> bishop_model_value;
+                    break;
+                case 2: //pow(Se, parameter)
+                    in_sd >> bishop_model_value;
+                    break;
+                case 3:              // JM model 3:    if p<bishop_model_value -> bishop_parameter=0.0;  else -> bishop_parameter=1.0
+                    in_sd >> bishop_model_value;
+                    break;
+                default:
+                    break;
+                }
+                in_sd.clear();
+            }
+            //....................................................................
+            if (line_string.find("$STRESS_INTEGRATION_TOLERANCE") != string::npos)
+            {
+                in_sd.str(GetLineFromFile1(msp_file));
+                in_sd >> f_tol >> s_tol;
+                in_sd.clear();
+            }
+            if (line_string.find("$STRESS_UNIT") != string::npos)
+            {
+                in_sd.str(GetLineFromFile1(msp_file));
+                in_sd >> sub_line;
+                if (sub_line.compare("MegaPascal") == 0)
+                    grav_const = 9.81e-6;
+                else if (sub_line.find("KiloPascal") == 0)
+                    grav_const = 9.81e-3;
+                in_sd.clear();
+            }
+            //WX:08.2011 define gravity constant
+            if (line_string.find("$GRAVITY_CONSTANT") != string::npos)
+            {
+                in_sd.str(GetLineFromFile1(msp_file));
+                in_sd >> grav_const;
+                in_sd.clear();
+            }
+            //....................................................................
+            // subkeyword found
+            if (line_string.find("$PLASTICITY") != string::npos)
+            {
+                in_sd.str(GetLineFromFile1(msp_file));
+                in_sd >> sub_line;
+                in_sd.clear();
+                if (sub_line.find("DRUCKER-PRAGER") != string::npos)
+                {
+                    devS = new double[6];
+                    Plasticity_type = 1;
+                    // No return mapping
+                    if (sub_line.find("NORETURNMAPPING") != string::npos)
+                    {
+                        Plasticity_type = 10;
+                        if (sub_line.find("TENSIONCUTOFF") != string::npos) //WX: 08.2010
+                        {
+                            Plasticity_type = 11;
+                            dFtds = new double[6]; //WX: 08.2010 Tensile yield function
+                            dGtds = new double[6];
+                            ConstitutiveMatrix = new Matrix(6, 6); //WX: 08.2010
+                        }
+                        dFds = new double[6];
+                        dGds = new double[6];
+                        D_dFds = new double[6];
+                        D_dGds = new double[6];
+                    }
+                    Size = 5;
+                    if (Plasticity_type == 11)
+                        Size = 6;
+                    /*
+                       Material parameters for Cam-Clay model
+                       i : parameter
+                       0 : The initial yield stress
+                       1 : Plastic hardening parameter
+                       2 : Internal frection angle
+                       3 : Dilatancy angle
+                       4 : Localized softening modulus
+                       5 : Tensile strength //WX
+                     */
+                }
+                else if (sub_line.find("SINGLE_YIELD_SURFACE") != string::npos)
+                {
+                    Plasticity_type = 2;
+                    Size = 23;
+                    AllocateMemoryforSYS();
+                    /*
+                       Material parameters for Single yield surface model
+                       i: parameter
+                       0: alpha0
+                       1: beta0
+                       2: delta0
+                       3: epsilon0
+                       4: kappa0
+                       5: gamma0
+                       6: m0
 
-				   20: Initial stress_xx
-				   21: Initial stress_yy
-				   22: Initial stress_zz
-				 */
-			}
-			else if(sub_line.find("CAM-CLAY") != string::npos)
-			{
-				Plasticity_type = 3;
-				Size = 10;
-				/*
-				   Material parameters for Cam-Clay model
-				   i: parameter
-				   0 : M: slope of the critical line
-				   1 : Lamda, the virgin compression index
-				   2 : Kappa, swelling index
-				   3 : p0, preconsolidation pressure
-				   4 : e0, initial void ratio
-				   5 : OCR
-				   6 : Initial stress_xx
-				   7 : Initial stress_yy
-				   8 : Initial stress_zz
-				   9 : Mimimum p: ( stress_xx + stress_yy + stress_zz )/3
-				 */
-			}
-			else if(sub_line.find("MOHR-COULOMB") != string::npos) //WX
-			{
-				devS = new double[6];
-				TransMatrixA = new Matrix(6,6);//WX:08.2011
-				TransMatrixA_T = new Matrix(6,6);
-				Inv_TransA = new Matrix(6,6);
-				Inv_TransA_T = new Matrix(6,6);
-				TmpDe = new Matrix(6,6);
-				Inv_De = new Matrix(6,6);
-				TMatrix = new Matrix(6,6);
-				TmpMatrix = new Matrix(6,6);
-				TmpMatrix2 = new Matrix(6,6);
-				Dep_l = new Matrix(3,3);
-				dDep_l = new Matrix(3,3);
-				dGds_dFds = new Matrix(6,6);//WX:08.2011
-				ConstitutiveMatrix = new Matrix(6,6);
-				Plasticity_type = 4;
-				Size = 6;
-				/*
-				   i	parameter
-				   0	cohesion
-				   1	friction angle
-				   2	dilatance angle
-				   3	tension strength
-				   4   hardening curve for friction angle
-				   5   hardening curve for cohesion
-				 */
-			}
-			else if(sub_line.find("HOEK-BROWN") != string::npos) //WX
-			{
-				devS = new double[6];
-				ConstitutiveMatrix = new Matrix(6,6);
-				Plasticity_type = 5;
-				Size = 4;
-				/*
-				   i   parameter
-				   0   a
-				   1   s
-				   2   mb
-				   3   sigci
-				 */
-			}
-			if (Plasticity_type == 1)
-				data_Plasticity = new Matrix(Size + 1);
-			else
-				data_Plasticity = new Matrix(Size);
-			for(i = 0; i < Size; i++)
-			{
-				in_sd.str(GetLineFromFile1(msp_file));
-				in_sd >> (*data_Plasticity)(i);
-				in_sd.clear();
-			}
-		}
-		 //Solid reaction system
-		 if(line_string.find("$REACTIVE_SYSTEM")!=string::npos)
-         {
-	         in_sd.str(GetLineFromFile1(msp_file));
-			 in_sd >> reaction_system;
-			 this->setSolidReactiveSystem(FiniteElement::convertSolidReactiveSystem(reaction_system));
-			 in_sd.clear();
-			 if (reaction_system.compare("SINUSOIDAL") == 0) { //For Benchmarks
-				in_sd.str(GetLineFromFile1(msp_file));
-				in_sd >> reaction_enthalpy; //in J/kg, negative for exothermic composition reaction
-				in_sd.clear();
-			 }
-			 SetSolidReactiveSystemProperties();
+                       7: alpha1
+                       8: beta1
+                       9: delta1
+                       10: epsilon1
+                       11: kappa1
+                       12: gamma1
+                       13: m1
 
-         }
+                       14: Psi1
+                       15: Psi2
 
-		 //Solid non reactive fraction
-		 if(line_string.find("$NON_REACTIVE_FRACTION")!=string::npos)
-         {
-	         in_sd.str(GetLineFromFile1(msp_file));
-			 in_sd >> non_reactive_solid_volume_fraction >> non_reactive_solid_density;
-			 in_sd.clear();
+                       16: Ch
+                       17: Cd
+                       18: br
+                       19: mr
 
-         }
+                       20: Initial stress_xx
+                       21: Initial stress_yy
+                       22: Initial stress_zz
+                     */
+                }
+                else if (sub_line.find("CAM-CLAY") != string::npos)
+                {
+                    Plasticity_type = 3;
+                    Size = 10;
+                    /*
+                       Material parameters for Cam-Clay model
+                       i: parameter
+                       0 : M: slope of the critical line
+                       1 : Lamda, the virgin compression index
+                       2 : Kappa, swelling index
+                       3 : p0, preconsolidation pressure
+                       4 : e0, initial void ratio
+                       5 : OCR
+                       6 : Initial stress_xx
+                       7 : Initial stress_yy
+                       8 : Initial stress_zz
+                       9 : Mimimum p: ( stress_xx + stress_yy + stress_zz )/3
+                     */
+                }
+                else if (sub_line.find("MOHR-COULOMB") != string::npos) //WX
+                {
+                    devS = new double[6];
+                    TransMatrixA = new Matrix(6, 6);//WX:08.2011
+                    TransMatrixA_T = new Matrix(6, 6);
+                    Inv_TransA = new Matrix(6, 6);
+                    Inv_TransA_T = new Matrix(6, 6);
+                    TmpDe = new Matrix(6, 6);
+                    Inv_De = new Matrix(6, 6);
+                    TMatrix = new Matrix(6, 6);
+                    TmpMatrix = new Matrix(6, 6);
+                    TmpMatrix2 = new Matrix(6, 6);
+                    Dep_l = new Matrix(3, 3);
+                    dDep_l = new Matrix(3, 3);
+                    dGds_dFds = new Matrix(6, 6);//WX:08.2011
+                    ConstitutiveMatrix = new Matrix(6, 6);
+                    Plasticity_type = 4;
+                    Size = 6;
+                    /*
+                       i	parameter
+                       0	cohesion
+                       1	friction angle
+                       2	dilatance angle
+                       3	tension strength
+                       4   hardening curve for friction angle
+                       5   hardening curve for cohesion
+                     */
+                }
+                else if (sub_line.find("HOEK-BROWN") != string::npos) //WX
+                {
+                    devS = new double[6];
+                    ConstitutiveMatrix = new Matrix(6, 6);
+                    Plasticity_type = 5;
+                    Size = 4;
+                    /*
+                       i   parameter
+                       0   a
+                       1   s
+                       2   mb
+                       3   sigci
+                     */
+                }
+                if (Plasticity_type == 1)
+                    data_Plasticity = new Matrix(Size + 1);
+                else
+                    data_Plasticity = new Matrix(Size);
+                for (i = 0; i < Size; i++)
+                {
+                    in_sd.str(GetLineFromFile1(msp_file));
+                    in_sd >> (*data_Plasticity)(i);
+                    in_sd.clear();
+                }
+            }
+            //Solid reaction system
+            if (line_string.find("$REACTIVE_SYSTEM") != string::npos)
+            {
+                in_sd.str(GetLineFromFile1(msp_file));
+                in_sd >> reaction_system;
+                this->setSolidReactiveSystem(FiniteElement::convertSolidReactiveSystem(reaction_system));
+                in_sd.clear();
+                if (reaction_system.compare("SINUSOIDAL") == 0) { //For Benchmarks
+                    in_sd.str(GetLineFromFile1(msp_file));
+                    in_sd >> reaction_enthalpy; //in J/kg, negative for exothermic composition reaction
+                    in_sd.clear();
+                }
+                SetSolidReactiveSystemProperties();
 
-		 if(line_string.find("$SPECIFIC_HEAT_SOURCE")!=string::npos)
-         {
-	         in_sd.str(GetLineFromFile1(msp_file));
-			 in_sd >> specific_heat_source;
-			 in_sd.clear();
-		 }
+            }
 
-		if(line_string.find("$MICRO_STRUCTURE_PLAS")!=string::npos)//WX:09.2011 for anisotropic plasticity
-		{
-			if (line_string.find("NORETURNMAPPING")!=string::npos)
-				Plasticity_type=44;//direct stress intergration anisotropic plas.
-			Plasticity_Bedding=true;
-			MicroStruTensor = new double[3];
-			Bedding_Norm = new double[3];
-			TransMicroStru = new Matrix(6,6);
-			TransMicroStru_T = new Matrix(6,6);
-			TransMicroStru_TInv = new Matrix(6,6);
-			for(i=0; i<4; i++)
-			{
-				in_sd.str(GetLineFromFile1(msp_file));
-				in_sd>>line_string;
-				if(line_string.find("MICRO_STRUCTURE_TENSOR")!=string::npos)
-				{
-					in_sd>>MicroStruTensor[0]>>MicroStruTensor[1]>>MicroStruTensor[2];
-				}
-				else if(line_string.find("BEDDING_NORM")!=string::npos)
-				{
-					in_sd>>Bedding_Norm[0]>>Bedding_Norm[1]>>Bedding_Norm[2];
-				}
-				/*else if(line_string.find("FRICTION_CURVE")!=string::npos)
-				{
-				in_sd>>bedding_fric_curve;
-				}*/
-				else if(line_string.find("UNIAXI_COMP_CURVE")!=string::npos)
-				{
-					in_sd>>bedding_uc_curve_order;
-					comp_para = new double [bedding_uc_curve_order+1];
-					for(int ii=0; ii<bedding_uc_curve_order+1; ii++)
-						in_sd>>comp_para[ii];
-				}
-				else if(line_string.find("TENSION_CURVE")!=string::npos)
-				{
-					in_sd>>bedding_tens_curve_order;
-					tens_para = new double [bedding_tens_curve_order+1];
-					for(int ii=0; ii<bedding_tens_curve_order+1; ii++)
-						in_sd>>tens_para[ii];
-				}
-		in_sd.clear();
-	}
-			CalTransMatrixMicroStru(TransMicroStru, Bedding_Norm);
-			TransMicroStru->GetTranspose(*TransMicroStru_T);
-			Cal_Inv_Matrix(6, TransMicroStru_T, TransMicroStru_TInv);
-			//TransMicroStru_T->Write();
-			//TransMicroStru_TInv->Write();
-			//TransMicroStru->Write();
-		}
-		in_sd.clear();
-	}
-	return position;
-}
+            //Solid non reactive fraction
+            if (line_string.find("$NON_REACTIVE_FRACTION") != string::npos)
+            {
+                in_sd.str(GetLineFromFile1(msp_file));
+                in_sd >> non_reactive_solid_volume_fraction >> non_reactive_solid_density;
+                in_sd.clear();
+
+            }
+
+            if (line_string.find("$SPECIFIC_HEAT_SOURCE") != string::npos)
+            {
+                in_sd.str(GetLineFromFile1(msp_file));
+                in_sd >> specific_heat_source;
+                in_sd.clear();
+            }
+
+            if (line_string.find("$MICRO_STRUCTURE_PLAS") != string::npos)//WX:09.2011 for anisotropic plasticity
+            {
+                if (line_string.find("NORETURNMAPPING") != string::npos)
+                    Plasticity_type = 44;//direct stress intergration anisotropic plas.
+                Plasticity_Bedding = true;
+                MicroStruTensor = new double[3];
+                Bedding_Norm = new double[3];
+                TransMicroStru = new Matrix(6, 6);
+                TransMicroStru_T = new Matrix(6, 6);
+                TransMicroStru_TInv = new Matrix(6, 6);
+                for (i = 0; i < 4; i++)
+                {
+                    in_sd.str(GetLineFromFile1(msp_file));
+                    in_sd >> line_string;
+                    if (line_string.find("MICRO_STRUCTURE_TENSOR") != string::npos)
+                    {
+                        in_sd >> MicroStruTensor[0] >> MicroStruTensor[1] >> MicroStruTensor[2];
+                    }
+                    else if (line_string.find("BEDDING_NORM") != string::npos)
+                    {
+                        in_sd >> Bedding_Norm[0] >> Bedding_Norm[1] >> Bedding_Norm[2];
+                    }
+                    /*else if(line_string.find("FRICTION_CURVE")!=string::npos)
+                    {
+                    in_sd>>bedding_fric_curve;
+                    }*/
+                    else if (line_string.find("UNIAXI_COMP_CURVE") != string::npos)
+                    {
+                        in_sd >> bedding_uc_curve_order;
+                        comp_para = new double[bedding_uc_curve_order + 1];
+                        for (int ii = 0; ii < bedding_uc_curve_order + 1; ii++)
+                            in_sd >> comp_para[ii];
+                    }
+                    else if (line_string.find("TENSION_CURVE") != string::npos)
+                    {
+                        in_sd >> bedding_tens_curve_order;
+                        tens_para = new double[bedding_tens_curve_order + 1];
+                        for (int ii = 0; ii < bedding_tens_curve_order + 1; ii++)
+                            in_sd >> tens_para[ii];
+                    }
+                    in_sd.clear();
+                }
+                CalTransMatrixMicroStru(TransMicroStru, Bedding_Norm);
+                TransMicroStru->GetTranspose(*TransMicroStru_T);
+                Cal_Inv_Matrix(6, TransMicroStru_T, TransMicroStru_TInv);
+                //TransMicroStru_T->Write();
+                //TransMicroStru_TInv->Write();
+                //TransMicroStru->Write();
+            }
+            in_sd.clear();
+        }
+        return position;
+    }
 
 //==========================================================================
 
@@ -1004,6 +1042,10 @@ CSolidProperties::CSolidProperties()
 	thermal_conductivity_tensor_type = 0;
 	thermal_conductivity_tensor_dim = 1;
 	thermal_conductivity_tensor[0] = 1.0;
+
+	// freezing model parameters
+	freezing_latent_heat = 0.0; // TYZ: 2015.02.27. Latent heat for freezing J/kg
+	freezing_sigmoid_coeff = 0.0; // TYZ: 2015.02.27. sigmoid coefficient for freezing unitless
 
 	  //Reactive system
 	reaction_system = "INERT";
@@ -1201,6 +1243,12 @@ double CSolidProperties::Density(double refence )
 	case 1:
 		val = (*data_Density)(0);
 		break;
+	case 6:
+		if (refence == 0.0)
+		    val = (*data_Density)(0);
+		else 
+	        val = (*data_Density)(1);
+		break;
 	}
 	return val;
 }
@@ -1240,6 +1288,12 @@ double CSolidProperties::Heat_Capacity(double refence)
 		double C = refence/lower_solid_density_limit - 1.0;
 		val = lower_solid_density_limit/refence * ((*data_Capacity)(0) + C * (*data_Capacity)(1));
 	}
+		break;
+	case 7: //Freezing model - TYZ
+		if (refence == 0.0)
+			val = (*data_Capacity)(0);//soil heat capacity 0
+		else
+			val = (*data_Capacity)(1);//ice heat capacity 1
 		break;
 	default:
 		val = (*data_Capacity)(0);
@@ -1426,6 +1480,14 @@ double CSolidProperties::Heat_Conductivity(double refence)
 	case 5:                               // DECOVALEX2015, TaskB2 JM
 		CalPrimaryVariable(capacity_pcs_name_vector);
 		val = GetMatrixValue(primary_variable[0]+T_0,primary_variable[1],name,&gueltig);
+		break;
+	case 7: //Freezing model - TYZ 
+		if (refence == 0.0)
+			val = (*data_Conductivity)(0); // soil thermal conductivity 0
+        else if (refence == 1.0)
+            val = (*data_Conductivity)(1); // ice thermal conductivity 1
+        else
+			val = (*data_Conductivity)(2); // water thermal conductivity 2
 		break;
 	}
 	return val;
