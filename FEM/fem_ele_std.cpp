@@ -288,7 +288,7 @@ CFiniteElementStd:: CFiniteElementStd(CRFProcess* Pcs, const int C_Sys_Flad, con
 		
 	// case HEAT_TRANSPORT with Borehole Heat Exchangers 
 	case HEAT_TRANSPORT_BHE:
-	    PcsType = EPT_HEAT_TRANSPORT;
+	    PcsType = EPT_HEAT_TRANSPORT_BHE;
 		idx0 = pcs->GetNodeValueIndex("TEMPERATURE_SOIL");
 		idx1 = idx0 + 1;
 		break;
@@ -452,6 +452,7 @@ CFiniteElementStd:: CFiniteElementStd(CRFProcess* Pcs, const int C_Sys_Flad, con
 		switch (pcs->getProcessType())
 		{
 		case HEAT_TRANSPORT:
+        case HEAT_TRANSPORT_BHE:
 		case MASS_TRANSPORT:
 		case AIR_FLOW:
 		case MULTI_COMPONENTIAL_FLOW:
@@ -620,7 +621,7 @@ void CFiniteElementStd::SetMemory()
 
 		Laplace->LimitSize(Size, Size);
 
-		if (PcsType == EPT_HEAT_TRANSPORT || PcsType == EPT_MASS_TRANSPORT || PcsType == EPT_GAS_FLOW
+		if (PcsType == EPT_HEAT_TRANSPORT || PcsType == EPT_HEAT_TRANSPORT_BHE || PcsType == EPT_MASS_TRANSPORT || PcsType == EPT_GAS_FLOW
 		    || PcsType == EPT_MULTI_COMPONENTIAL_FLOW || PcsType == EPT_THERMAL_NONEQUILIBRIUM || PcsType == EPT_TES)
 		{
 			Advection->LimitSize(Size, Size); //SB4200
@@ -643,7 +644,7 @@ void CFiniteElementStd::SetMemory()
 		Laplace = EleMat->GetLaplace();
 		// Advection, Storage, Content SB4200
 		if (PcsType == EPT_MASS_TRANSPORT || PcsType == EPT_HEAT_TRANSPORT || PcsType == EPT_MULTI_COMPONENTIAL_FLOW
-		    || PcsType == EPT_THERMAL_NONEQUILIBRIUM || PcsType == EPT_TES)
+		    || PcsType == EPT_THERMAL_NONEQUILIBRIUM || PcsType == EPT_TES || PcsType == EPT_HEAT_TRANSPORT_BHE )
 		{
 			Advection = EleMat->GetAdvection();
 			Storage = EleMat->GetStorage();
@@ -1788,6 +1789,11 @@ double CFiniteElementStd::CalCoefMass()
 	case EPT_GAS_FLOW:                               // Air (gas) flow
 		val = MediaProp->Porosity(Index,pcs->m_num->ls_theta) / interpolate(NodalVal1);
 		break;
+    case EPT_HEAT_TRANSPORT_BHE: 
+        TG = interpolate(NodalVal1);
+        val = MediaProp->HeatCapacity(Index, pcs->m_num->ls_theta, this);
+        val /= time_unit_factor;
+        break; 
 	}
 	return val;
 }
@@ -2085,6 +2091,9 @@ double CFiniteElementStd::CalCoefStorage()
 		break;
 	case EPT_GAS_FLOW:                               // Air (gas) flow
 		break;
+    case EPT_HEAT_TRANSPORT_BHE:                               // heat transport BHE
+        val = 0.0;
+        break;
 	}
 	return val;
 }
@@ -2164,6 +2173,8 @@ double CFiniteElementStd::CalCoefContent()
 		break;
 	case EPT_GAS_FLOW:                               // Air (gas) flow
 		break;
+    case EPT_HEAT_TRANSPORT_BHE:                               // heat transport bhe
+        break;
 	}
 	return val;
 }
@@ -2522,6 +2533,67 @@ void CFiniteElementStd::CalCoefLaplace(bool Gravity, int ip)
 				mat[i] = tensor[i];  //mat[i*dim+i] = tensor[i];
 		}
 		break;
+    case EPT_HEAT_TRANSPORT_BHE:                               // same as heat transport
+        if (SolidProp->GetConductModel() == 2) // Boiling model. DECOVALEX THM2
+        {
+            TG = interpolate(NodalVal1);
+            for (size_t i = 0; i < dim * dim; i++)
+                mat[i] = 0.0;
+            for (size_t i = 0; i < dim; i++)
+                mat[i * dim + i] = SolidProp->Heat_Conductivity(TG);
+        }
+        // DECOVALEX THM1 or Curce 12.09. WW
+        else if (SolidProp->GetConductModel() % 3 == 0 || SolidProp->GetConductModel() == 4)
+        {
+            // WW
+            PG = interpolate(NodalValC1);
+            if (cpl_pcs->type != 1212)
+                PG *= -1.0;
+            Sw = MediaProp->SaturationCapillaryPressureFunction(PG);
+            for (size_t i = 0; i < dim * dim; i++)
+                mat[i] = 0.0;
+            mat_fac = SolidProp->Heat_Conductivity(Sw);
+            for (size_t i = 0; i < dim; i++)
+                mat[i * dim + i] = mat_fac;
+        }
+        //WW        else if(SolidProp->GetCapacityModel()==1 && MediaProp->heat_diffusion_model == 273){
+        else if (SolidProp->GetConductModel() == 1)
+        {
+            TG = interpolate(NodalVal1);
+            tensor = MediaProp->HeatDispersionTensorNew(ip);
+            for (size_t i = 0; i < dim * dim; i++)
+                mat[i] = tensor[i];
+        }
+        else if (SolidProp->GetConductModel() == 7) // heat conductivity value including ice part 
+        {
+            TG = interpolate(NodalVal1); // ground temperature
+                                         // get heat conductivity including the ice part
+            lambda_solid = SolidProp->Heat_Conductivity(0);
+            lambda_ice = SolidProp->Heat_Conductivity(1);
+            lambda_water = SolidProp->Heat_Conductivity(2);
+            // get the porosity
+            poro = MediaProp->Porosity(Index, pcs->m_num->ls_theta);
+            // get the freezing model parameter
+            sigmoid_coeff = SolidProp->getFreezingSigmoidCoeff();
+            // get the volume fraction of ice
+            phi_i = MediaProp->CalcIceVolFrac(TG, sigmoid_coeff, poro);
+            // output the element value
+            this->pcs->SetElementValue(this->MeshElement->GetIndex(), pcs->GetElementValueIndex("PHI_I"), phi_i);
+
+
+            mat_fac = lambda_solid*(1 - poro) + lambda_ice*phi_i + lambda_water*(poro - phi_i);
+
+            for (size_t i = 0; i < dim; i++)
+                mat[i * dim + i] = mat_fac;
+        }
+        else
+        {
+            tensor = MediaProp->HeatConductivityTensor(Index);
+            for (size_t i = 0; i < dim * dim; i++)
+                mat[i] = tensor[i];  //mat[i*dim+i] = tensor[i];
+        }
+        break;
+
 	case EPT_MASS_TRANSPORT:                               // Mass transport
 		mat_fac = 1.0;            //MediaProp->Porosity(Index,pcs->m_num->ls_theta); // porosity now included in MassDispersionTensorNew()
 		// Get transport phase of component, to obtain correct velocities in dispersion tensor
@@ -3565,6 +3637,18 @@ double CFiniteElementStd::CalCoefAdvection()
 		else
 			val = FluidProp->SpecificHeatCapacity() * FluidProp->Density();
 		break;
+    case EPT_HEAT_TRANSPORT_BHE:                               // same as heat transport
+        if (FluidProp->density_model == 14 && MediaProp->heat_diffusion_model == 1 &&
+            cpl_pcs)
+        {
+            dens_arg[0] = interpolate(NodalValC1);
+            dens_arg[1] = interpolate(NodalVal1) + PhysicalConstant::CelsiusZeroInKelvin;
+            dens_arg[2] = Index;
+            val = FluidProp->SpecificHeatCapacity(dens_arg) * FluidProp->Density(dens_arg);
+        }
+        else
+            val = FluidProp->SpecificHeatCapacity() * FluidProp->Density();
+        break;
 	case EPT_MASS_TRANSPORT:                               // Mass transport //SB4200
 		val = 1.0 * time_unit_factor; //*MediaProp->Porosity(Index,pcs->m_num->ls_theta); // Porosity;
 		break;
@@ -3905,7 +3989,7 @@ double CFiniteElementStd::CalcSUPGCoefficient(double* vel,int ip)
 	double ele_len = CalcSUPGEffectiveElemenetLength(vel);
 	// Diffusivity = (effective heat conductivity) / (fluid heat capacity)
 	double* dispersion_tensor = NULL;
-	if (PcsType == EPT_HEAT_TRANSPORT)                     //heat
+	if (PcsType == EPT_HEAT_TRANSPORT || PcsType == EPT_HEAT_TRANSPORT_BHE)                     //heat
 
 		dispersion_tensor = MediaProp->HeatConductivityTensor(MeshElement->GetIndex());
 	//mass
@@ -3941,7 +4025,7 @@ double CFiniteElementStd::CalcSUPGCoefficient(double* vel,int ip)
 		diff = max_diff;
 	}
 	}
-	if (PcsType == EPT_HEAT_TRANSPORT)                     //heat
+	if (PcsType == EPT_HEAT_TRANSPORT || PcsType == EPT_HEAT_TRANSPORT_BHE)                     //heat
 	{
 			diff /= (FluidProp->SpecificHeatCapacity() * FluidProp->Density());
 	}
@@ -6946,7 +7030,7 @@ void CFiniteElementStd::Cal_Velocity()
 
 		// Gravity term
 		//NW
-		if (PcsType != EPT_HEAT_TRANSPORT && PcsType != EPT_MASS_TRANSPORT) { // JOD 2014-11-10
+		if (PcsType != EPT_HEAT_TRANSPORT && PcsType != EPT_MASS_TRANSPORT && PcsType != EPT_HEAT_TRANSPORT_BHE) { // JOD 2014-11-10
 			if (k == 2 && (!HEAD_Flag) && FluidProp->CheckGravityCalculation())
 			{
 				if (PcsType == EPT_THERMAL_NONEQUILIBRIUM || PcsType == EPT_TES)
@@ -7051,7 +7135,7 @@ void CFiniteElementStd::Cal_Velocity()
 			for (size_t i = 0; i < dim; i++)
 			{
 #ifdef USE_TRANSPORT_FLUX
-				if (PcsType == EPT_HEAT_TRANSPORT || PcsType == EPT_MASS_TRANSPORT) //  // JOD 2014-11-10
+				if (PcsType == EPT_HEAT_TRANSPORT || PcsType == EPT_HEAT_TRANSPORT_BHE || PcsType == EPT_MASS_TRANSPORT) //  // JOD 2014-11-10
 					gp_ele->TransportFlux(i, gp) = 0;
 #endif
 
@@ -7060,7 +7144,7 @@ void CFiniteElementStd::Cal_Velocity()
 					//              gp_ele->Velocity(i, gp) -= mat[dim*i+j]*vel[j];  // unit as that given in input file
 					//SI Unit
 #ifdef USE_TRANSPORT_FLUX
-					if (PcsType == EPT_HEAT_TRANSPORT || PcsType == EPT_MASS_TRANSPORT) //  // JOD 2014-11-10
+					if (PcsType == EPT_HEAT_TRANSPORT || PcsType == EPT_HEAT_TRANSPORT_BHE || PcsType == EPT_MASS_TRANSPORT) //  // JOD 2014-11-10
 						gp_ele->TransportFlux(i, gp) -= mat[dim*i + j] * vel[j] / time_unit_factor;
 					else
 #endif
@@ -10054,30 +10138,43 @@ void CFiniteElementStd::Assembly()
 	//....................................................................
 	case EPT_HEAT_TRANSPORT:                               // Heat transport
 		heat_phase_change = false; // ?2WW
-		//  if(SolidProp->GetCapacityModel()==2) // Boiling model
-		//    CalNodalEnthalpy();
 
-        if ( this->pcs->getProcessType() == FiniteElement::HEAT_TRANSPORT_BHE && ele_dim == 1 ) 
+        //CMCD4213
+        AssembleMixedHyperbolicParabolicEquation();
+        if (FluidProp->density_model == 14 && MediaProp->heat_diffusion_model == 1 &&
+                    cpl_pcs)
+                    Assemble_RHS_HEAT_TRANSPORT();  // This include when need pressure terms n dp/dt + nv.Nabla p//AKS
+        if (MediaProp->evaporation == 647)
+                Assemble_RHS_HEAT_TRANSPORT2();  //AKS
+#if defined(USE_PETSC) // || defined(other parallel libs)//03~04.3012. WW
+		add2GlobalMatrixII();
+#endif
+		break;
+        //....................................................................
+    case EPT_HEAT_TRANSPORT_BHE:                               // Heat transport
+        heat_phase_change = false; // ?2WW
+
+        if (this->pcs->getProcessType() == FiniteElement::HEAT_TRANSPORT_BHE && ele_dim == 1)
         {
             // this is a BHE element
-            AssembleMixedHyperbolicParabolicEquation_BHE(); 
+            AssembleMixedHyperbolicParabolicEquation_BHE();
         }
         else
         {
             //CMCD4213
             AssembleMixedHyperbolicParabolicEquation();
             if (FluidProp->density_model == 14 && MediaProp->heat_diffusion_model == 1 &&
-                    cpl_pcs)
-                    Assemble_RHS_HEAT_TRANSPORT();  // This include when need pressure terms n dp/dt + nv.Nabla p//AKS
+                cpl_pcs)
+                Assemble_RHS_HEAT_TRANSPORT();  // This include when need pressure terms n dp/dt + nv.Nabla p//AKS
             if (MediaProp->evaporation == 647)
                 Assemble_RHS_HEAT_TRANSPORT2();  //AKS
         }
 
 #if defined(USE_PETSC) // || defined(other parallel libs)//03~04.3012. WW
-		add2GlobalMatrixII();
+        add2GlobalMatrixII();
 #endif
-		break;
-	//....................................................................
+        break;
+    //....................................................................
 	case EPT_MASS_TRANSPORT:                               // Mass transport
 		//SB4200
 		AssembleMixedHyperbolicParabolicEquation();
