@@ -1,6 +1,15 @@
 set( HEADERS
 	BoundaryCondition.h
-	PhysicalConstant.h
+	BHEAbstract.h
+	BHE_1U.h
+	BHE_2U.h
+	BHE_CXC.h
+	BHE_CXA.h
+	BHE_Net.h
+	BHE_Net_ELE_Abstract.h
+	BHE_Net_ELE_Distributor.h
+	BHE_Net_ELE_HeatPump.h
+	BHE_Net_ELE_Pipe.h
 	Constrained.h
 	conversion_rate.h
 	DistributionInfo.h
@@ -21,6 +30,7 @@ set( HEADERS
 	matrix_class.h
 	Output.h
 	pcs_dm.h
+	PhysicalConstant.h
 	problem.h
 	ProcessInfo.h
 	prototyp.h
@@ -52,6 +62,14 @@ set( HEADERS
 
 set( SOURCES
 	BoundaryCondition.cpp
+	BHE_1U.cpp
+	BHE_2U.cpp
+	BHE_CXC.cpp
+	BHE_CXA.cpp
+	BHE_Net.cpp
+	BHE_Net_ELE_Distributor.cpp
+	BHE_Net_ELE_HeatPump.cpp
+	BHE_Net_ELE_Pipe.cpp
 	CAP_IO.cpp
 	conversion_rate.cpp
 	DistributionInfo.cpp
