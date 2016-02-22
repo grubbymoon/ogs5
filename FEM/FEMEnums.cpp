@@ -89,6 +89,8 @@ std::string convertProcessTypeToString ( ProcessType pcs_type )
 		return "GROUNDWATER_FLOW";
 	case HEAT_TRANSPORT:
 		return "HEAT_TRANSPORT";
+	case HEAT_TRANSPORT_BHE:
+		return "HEAT_TRANSPORT_BHE";
 	case DEFORMATION:
 		return "DEFORMATION";
 	case DEFORMATION_FLOW:

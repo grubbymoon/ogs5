@@ -144,6 +144,15 @@ enum PrimaryVariable
 	TEMPERATURE,                          //!< TEMPERATURE
 	TEMPERATURE1,                         //!< for TNEQ/TES models
 	TEMPERATURE2,                         //!< for TNEQ model
+	TEMPERATURE_SOIL,                     // for heat transport with borehole heat exchanger model, T in soil matrix 
+	TEMPERATURE_IN_1,                     // for heat transport with borehole heat exchanger model, T in inward pipline 1 
+	TEMPERATURE_IN_2,                     // for heat transport with borehole heat exchanger model, T in inward pipline 2 
+	TEMPERATURE_OUT_1,                    // for heat transport with borehole heat exchanger model, T in outward pipline 1 
+	TEMPERATURE_OUT_2,                    // for heat transport with borehole heat exchanger model, T in outward pipline 2 
+	TEMPERATURE_G_1,                      // for heat transport with borehole heat exchanger model, grout T in the 1st section
+	TEMPERATURE_G_2,                      // for heat transport with borehole heat exchanger model, grout T in the 2nd section
+	TEMPERATURE_G_3,                      // for heat transport with borehole heat exchanger model, grout T in the 3rd section
+	TEMPERATURE_G_4,                      // for heat transport with borehole heat exchanger model, grout T in the 4th section
 	VELOCITY_DM_X,                        //!< VELOCITY_DM_X
 	VELOCITY_DM_Y,                        //!< VELOCITY_DM_Y
 	VELOCITY_DM_Z,                        //!< VELOCITY_DM_Z
