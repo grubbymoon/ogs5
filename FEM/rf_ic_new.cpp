@@ -38,6 +38,8 @@ using namespace std;
 #include "rf_node.h"
 #include "rf_pcs.h"
 #include "rfmat_cp.h"
+// tools
+#include "tools.h"
 
 #include "InitialCondition.h"
 
@@ -334,6 +336,10 @@ ios::pos_type CInitialCondition::Read(std::ifstream* ic_file,
 				in >> gradient_ref_depth; //CMCD
 				in >> gradient_ref_depth_value; //CMCD
 				in >> gradient_ref_depth_gradient; //CMCD
+			}
+			else if (this->getProcessDistributionType() == FiniteElement::VERTICAL_DISTRIBUTION)
+			{
+				in >> vertical_dist_curve_idx; //PH
 			}
 			else if (this->getProcessDistributionType() == FiniteElement::RESTART)
 				in >> rfr_file_name;
@@ -652,11 +658,50 @@ void CInitialCondition::SetPolyline(int nidx)
 
 		bool automatic(! m_polyline->isSetEps());
 		std::vector<std::size_t> nodes_vector;
+		std::vector<long> nodes_vector_BHE; 
 		m_msh->GetNODOnPLY(
 			static_cast<const GEOLIB::Polyline*>(getGeoObj()),
 			nodes_vector, automatic, m_polyline->epsilon
 		);
 		for (size_t i = 0; i < nodes_vector.size(); i++)
+        if (this->getProcess()->getProcessType() == FiniteElement::HEAT_TRANSPORT_BHE)
+        {
+			// HEAT_TRANSPORT_BHE needs special treatment
+			if (nidx == 0 || nidx == 1)
+			{
+				// this is soil temperature
+                this->getProcess()->SetNodeValue(nodes_vector[i], nidx, geo_node_value);
+            }
+            else
+            {
+                std::size_t idx_BHE(0); 
+                std::size_t local_node_index(0);
+
+                // other variables
+                // get global node index based on 
+                // 1) which BHE it is 
+                // 2) which variable it is
+                // 3) and where the location is. 
+
+                for (std::size_t j = 0; j < vec_BHEs.size(); j++)
+                if (this->getGeoName() == vec_BHEs[j]->get_name())
+                {
+                    idx_BHE = j;
+                    break;
+                } // end of if
+
+				nodes_vector_BHE.clear(); 
+                for (std::size_t j = 0; j < vec_BHE_nodes[idx_BHE].size(); j++)
+                {
+                    nodes_vector_BHE.push_back(j); 
+                }
+
+                for (std::size_t k = 0; k < nodes_vector_BHE.size(); k++)
+                    this->getProcess()->SetNodeValue(nodes_vector_BHE[k], nidx, geo_node_value);
+				
+            } // end of else
+        }  // end of if
+        else
 			this->getProcess()->SetNodeValue(nodes_vector[i],
 			                                 nidx,
 			                                 geo_node_value);
@@ -858,6 +903,22 @@ void CInitialCondition::SetDomain(int nidx)
 				        m_msh->nod_vector[i]->GetIndex(), nidx, node_val);
 			}
 		//if(dis_type_name.find("GRADIENT")!=string::npos)
+		//----------------------------------------------------------------------
+		if (this->getProcessDistributionType() == FiniteElement::VERTICAL_DISTRIBUTION)
+		{
+			//PH
+			int flag_valid = false;
+			for (i = 0; i < m_msh->GetNodesNumber(true); i++)
+			{
+				if (onZ == 1) //2D
+					node_depth = m_msh->nod_vector[i]->getData()[1];
+				if (onZ == 2) //3D
+					node_depth = m_msh->nod_vector[i]->getData()[2];
+				node_val = GetCurveValue(vertical_dist_curve_idx, 0, node_depth, &flag_valid);
+				this->getProcess()->SetNodeValue(
+					m_msh->nod_vector[i]->GetIndex(), nidx, node_val);
+			}
+		}	
 		//----------------------------------------------------------------------
 		if (this->getProcessDistributionType() == FiniteElement::RESTART)
 		{
