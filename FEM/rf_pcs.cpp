@@ -135,7 +135,10 @@ REACT_BRNS* m_vec_BRNS;
 #include "BHE_CXA.h"
 #include "BHE_CXC.h"
 #include "BHE_Net.h"
+#include "BHEAbstract.h"
 #include "BHE_Net_ELE_Distributor.h"
+#include "BHE_Net_ELE_HeatPump.h"
+#include "BHE_Net_ELE_Pipe.h"
 
 #include "../GEO/geo_ply.h"
 
@@ -6402,6 +6405,7 @@ void CRFProcess::CalIntegrationPointValue()
 	case FiniteElement::TNEQ: //HS, TN
 	case FiniteElement::TES: //HS, TN
 	case FiniteElement::HEAT_TRANSPORT: //JOD 2014-11-10
+    case FiniteElement::HEAT_TRANSPORT_BHE: // HS 2016-02-23
 	case FiniteElement::MASS_TRANSPORT: // JOD 2014-11-10
 		cal_integration_point_value = true;
 		break;
@@ -6427,7 +6431,10 @@ void CRFProcess::CalIntegrationPointValue()
 		elem = m_msh->ele_vector[i];
 		if (elem->GetMark())      // Marked for use
 		{
-			if ((getProcessType() == FiniteElement::HEAT_TRANSPORT || getProcessType() == FiniteElement::MASS_TRANSPORT) && !elem->selected)
+			if ((getProcessType() == FiniteElement::HEAT_TRANSPORT || 
+                 getProcessType() == FiniteElement::HEAT_TRANSPORT_BHE || 
+                 getProcessType() == FiniteElement::MASS_TRANSPORT) 
+                 && !elem->selected)
 				continue;   // not selected for TOTAL_FLUX calculation JOD 2014-11-10
 			fem->ConfigElement(elem, m_num->ele_gauss_points);
 			fem->Config(); //OK4709
@@ -6438,7 +6445,8 @@ void CRFProcess::CalIntegrationPointValue()
 				fem->Cal_Velocity();
 
 			//moved here from additional lower loop
-			if (getProcessType() == FiniteElement::TNEQ || getProcessType() == FiniteElement::TES)
+			if (getProcessType() == FiniteElement::TNEQ || 
+                getProcessType() == FiniteElement::TES)
 			{
 				fem->CalcSolidDensityRate(); // HS, thermal storage reactions
 			}
@@ -6499,8 +6507,10 @@ void CRFProcess::CalIntegrationPointValue()
 
 
 	//	if (_pcs_type_name.find("TWO_PHASE_FLOW") != string::npos) //WW/CB
-   if (getProcessType() == FiniteElement::TWO_PHASE_FLOW || getProcessType() == FiniteElement::MASS_TRANSPORT
-	   || getProcessType() == FiniteElement::HEAT_TRANSPORT) //WW/CB/JOD 2014-11-10
+   if (getProcessType() == FiniteElement::TWO_PHASE_FLOW || 
+       getProcessType() == FiniteElement::MASS_TRANSPORT || 
+       getProcessType() == FiniteElement::HEAT_TRANSPORT ||
+       getProcessType() == FiniteElement::HEAT_TRANSPORT_BHE ) //WW/CB/JOD 2014-11-10
 		cal_integration_point_value = false;
 }
 
@@ -7284,6 +7294,108 @@ void CRFProcess::DDCAssembleGlobalMatrix()
 					        m_bc_node->msh_node_number_subst,
 					        idx_1);
 				}
+                else
+                    if (this->getProcessType() == FiniteElement::HEAT_TRANSPORT_BHE && m_bc_node->pcs_pv_name.compare("TEMPERATURE_SOIL") != 0)
+                    {
+                        double temp_val(0.0);
+                        long eqs_index(0);
+                        double T_out(0.0);
+
+                        // if it is the TEMPERATURE_IN, 
+                        if (m_bc_node->bhe_pipe_flag == 0)
+                        {
+                            if (vec_BHEs[m_bc_node->bhe_index]->get_bound_type() == BHE::BHE_BOUND_FIXED_INFLOW_TEMP ||
+                                vec_BHEs[m_bc_node->bhe_index]->get_bound_type() == BHE::BHE_BOUND_FIXED_INFLOW_TEMP_CURVE)
+                            {
+                                // fixed inflow value
+                                bc_value = time_fac * fac * m_bc_node->node_value;
+                                // update flow rate related values when using flow rate curve
+                                if (vec_BHEs[m_bc_node->bhe_index]->use_flowrate_curve)
+                                {
+                                    int idx = vec_BHEs[m_bc_node->bhe_index]->flowrate_curve_idx;
+                                    double Q_r_temp = GetCurveValue(idx, 0, aktuelle_zeit, &valid);
+                                    vec_BHEs[m_bc_node->bhe_index]->update_flow_rate(Q_r_temp);
+                                }
+                                // switch off flag
+                                if ((int)bc_value == -9999)
+                                {
+                                    // set T_in equals T_out
+                                    eqs_index = bc_msh_node + shift + 1;
+#ifdef NEW_EQS
+                                    T_out = eqs_new->x[eqs_index];
+#else
+                                    T_out = eqs->x[eqs_index];
+#endif
+                                    bc_value = T_out;
+                                    // set flowrate to zero
+                                    double Q_r_temp = 1e-12;
+                                    vec_BHEs[m_bc_node->bhe_index]->update_flow_rate(Q_r_temp);
+                                }
+                            }
+                            else if (vec_BHEs[m_bc_node->bhe_index]->get_bound_type() == BHE::BHE_BOUND_POWER_IN_WATT ||
+                                vec_BHEs[m_bc_node->bhe_index]->get_bound_type() == BHE::BHE_BOUND_FIXED_TEMP_DIFF ||
+                                vec_BHEs[m_bc_node->bhe_index]->get_bound_type() == BHE::BHE_BOUND_POWER_IN_WATT_CURVE_FIXED_DT ||
+                                vec_BHEs[m_bc_node->bhe_index]->get_bound_type() == BHE::BHE_BOUND_BUILDING_POWER_IN_WATT_CURVE_FIXED_DT ||
+                                vec_BHEs[m_bc_node->bhe_index]->get_bound_type() == BHE::BHE_BOUND_BUILDING_POWER_IN_WATT_CURVE_FIXED_FLOW_RATE ||
+                                vec_BHEs[m_bc_node->bhe_index]->get_bound_type() == BHE::BHE_BOUND_POWER_IN_WATT_CURVE_FIXED_FLOW_RATE)
+                            {
+                                // this section is to get the T_out value from the last iteration--
+                                if (vec_BHEs[m_bc_node->bhe_index]->get_type() == BHE::BHE_TYPE_2U)
+                                    eqs_index = bc_msh_node + shift + 3;
+                                else
+                                    eqs_index = bc_msh_node + shift + 1;
+#ifdef NEW_EQS
+                                T_out = eqs_new->x[eqs_index];
+#else
+                                T_out = eqs->x[eqs_index];
+#endif
+                                // ---------------------------------------------------------------                         
+
+                                // need some calculation
+                                // notice that the time_fac will bring the curve value. We do not need it. 
+                                bc_value = fac * vec_BHEs[m_bc_node->bhe_index]->get_Tin_by_Tout(T_out, aktuelle_zeit /*this is current time*/);
+                            }
+
+
+                        }
+                        else // out flow pipe
+                        {
+
+                            if (m_bc_node->bhe_pv_index == 1) // TEMPERATURE_OUT_1 in the 1U/CXC/CXA setting
+                            {
+                                // get TEMPERATURE_IN_1 value
+                                eqs_index = bc_msh_node + shift - 1;
+#ifdef NEW_EQS
+                                temp_val = eqs_new->x[eqs_index];
+#else
+                                temp_val = eqs->x[eqs_index];
+#endif
+                                bc_value = time_fac * fac * temp_val;
+                            }
+                            else if (m_bc_node->bhe_pv_index == 2) // TEMPERATURE_OUT_1 in the 2U setting
+                            {
+                                // get TEMPERATURE_IN_1 value
+                                eqs_index = bc_msh_node + shift - 2;
+#ifdef NEW_EQS
+                                temp_val = eqs_new->x[eqs_index];
+#else
+                                temp_val = eqs->x[eqs_index];
+#endif
+                                bc_value = time_fac * fac * temp_val;
+                            }
+                            else if (m_bc_node->bhe_pv_index == 3) // TEMPERATURE_OUT_2
+                            {
+                                // get TEMPERATURE_IN_2 value
+                                eqs_index = bc_msh_node + shift - 2;
+#ifdef NEW_EQS
+                                temp_val = eqs_new->x[eqs_index];
+#else
+                                temp_val = eqs->x[eqs_index];
+#endif
+                                bc_value = time_fac * fac * temp_val;
+                            }
+                        }
+                    }
 				else
 				{
 					if (m_bc->getPressureAsHeadModel() == -1)	//this is the default case
@@ -7679,109 +7791,6 @@ void CRFProcess::DDCAssembleGlobalMatrix()
 						        GetNodeValueIndex(
 						                pcs_primary_function_name[0]) + 1);
 					else
-					if (this->getProcessType() == FiniteElement::HEAT_TRANSPORT_BHE && m_bc_node->pcs_pv_name.compare("TEMPERATURE_SOIL") != 0)
-					{
-						double temp_val(0.0);
-						long eqs_index(0);
-						double T_out(0.0);
-
-                    // if it is the TEMPERATURE_IN, 
-                    if (m_bc_node->bhe_pipe_flag == 0 )
-                    {
-						if (vec_BHEs[m_bc_node->bhe_index]->get_bound_type() == BHE::BHE_BOUND_FIXED_INFLOW_TEMP ||
-							vec_BHEs[m_bc_node->bhe_index]->get_bound_type() == BHE::BHE_BOUND_FIXED_INFLOW_TEMP_CURVE)
-						{
-							// fixed inflow value
-							bc_value = time_fac * fac * m_bc_node->node_value;
-							// update flow rate related values when using flow rate curve
-							if (vec_BHEs[m_bc_node->bhe_index]->use_flowrate_curve)
-							{
-								int idx = vec_BHEs[m_bc_node->bhe_index]->flowrate_curve_idx;
-								double Q_r_temp = GetCurveValue(idx, 0, aktuelle_zeit, &valid);
-								vec_BHEs[m_bc_node->bhe_index]->update_flow_rate(Q_r_temp);
-							}
-							// switch off flag
-							if ((int)bc_value == -9999)
-							{
-								// set T_in equals T_out
-								eqs_index = bc_msh_node + shift + 1;
-								#ifdef NEW_EQS
-									T_out = eqs_new->x[eqs_index];
-								#else
-									T_out = eqs->x[eqs_index];
-								#endif
-								bc_value = T_out;
-								// set flowrate to zero
-								double Q_r_temp = 1e-12;
-								vec_BHEs[m_bc_node->bhe_index]->update_flow_rate(Q_r_temp);
-							}
-						}
-                        else if (vec_BHEs[m_bc_node->bhe_index]->get_bound_type() == BHE::BHE_BOUND_POWER_IN_WATT ||
-                                 vec_BHEs[m_bc_node->bhe_index]->get_bound_type() == BHE::BHE_BOUND_FIXED_TEMP_DIFF || 
-                                 vec_BHEs[m_bc_node->bhe_index]->get_bound_type() == BHE::BHE_BOUND_POWER_IN_WATT_CURVE_FIXED_DT ||
-                                 vec_BHEs[m_bc_node->bhe_index]->get_bound_type() == BHE::BHE_BOUND_BUILDING_POWER_IN_WATT_CURVE_FIXED_DT ||
-                                 vec_BHEs[m_bc_node->bhe_index]->get_bound_type() == BHE::BHE_BOUND_BUILDING_POWER_IN_WATT_CURVE_FIXED_FLOW_RATE ||
-                                 vec_BHEs[m_bc_node->bhe_index]->get_bound_type() == BHE::BHE_BOUND_POWER_IN_WATT_CURVE_FIXED_FLOW_RATE )
-                        {
-                            // this section is to get the T_out value from the last iteration--
-                            if (vec_BHEs[m_bc_node->bhe_index]->get_type() == BHE::BHE_TYPE_2U)
-                                eqs_index = bc_msh_node + shift + 3;
-                            else
-                                eqs_index = bc_msh_node + shift + 1;
-                            #ifdef NEW_EQS
-                                T_out = eqs_new->x[eqs_index];
-                            #else
-                                T_out = eqs->x[eqs_index];
-                            #endif
-                            // ---------------------------------------------------------------                         
-
-                            // need some calculation
-                            // notice that the time_fac will bring the curve value. We do not need it. 
-                            bc_value = fac * vec_BHEs[m_bc_node->bhe_index]->get_Tin_by_Tout(T_out, aktuelle_zeit /*this is current time*/);
-                        }
-
-
-                    }
-                    else // out flow pipe
-                    {
-
-                        if (m_bc_node->bhe_pv_index == 1) // TEMPERATURE_OUT_1 in the 1U/CXC/CXA setting
-                        {
-                            // get TEMPERATURE_IN_1 value
-                            eqs_index = bc_msh_node + shift - 1;
-                        #ifdef NEW_EQS
-                            temp_val = eqs_new->x[eqs_index];
-                        #else
-                            temp_val = eqs->x[eqs_index];
-                        #endif
-                            bc_value = time_fac * fac * temp_val;
-                        }
-                        else if (m_bc_node->bhe_pv_index == 2) // TEMPERATURE_OUT_1 in the 2U setting
-                        {
-                            // get TEMPERATURE_IN_1 value
-                            eqs_index = bc_msh_node + shift - 2 ;
-                        #ifdef NEW_EQS
-                            temp_val = eqs_new->x[eqs_index];
-                        #else
-                            temp_val = eqs->x[eqs_index];
-                        #endif
-                            bc_value = time_fac * fac * temp_val;
-                        }
-                        else if ( m_bc_node->bhe_pv_index == 3) // TEMPERATURE_OUT_2
-                        {
-                            // get TEMPERATURE_IN_2 value
-                            eqs_index = bc_msh_node + shift - 2;
-                        #ifdef NEW_EQS
-                            temp_val = eqs_new->x[eqs_index];
-                        #else
-                            temp_val = eqs->x[eqs_index];
-                        #endif
-                            bc_value = time_fac * fac * temp_val;
-                        } // end of else if
-                    } // end of else out flow pipe
-                } // end if if BHE
-                else
-
 						// time_fac*fac*PCSGetNODValue(bc_msh_node,"PRESSURE1",0);
 						bc_value = time_fac * fac * m_bc_node->node_value;
 					//----------------------------------------------------------------
