@@ -2994,7 +2994,7 @@ double CMediumProperties::HeatCapacity(long number, double theta,
 		        assem->SolidProp->Density()) + Porosity(assem)
 		                * MFPCalcFluidsHeatCapacity(assem);
 		break;
-    case 7: // TYZ, same with the input case
+    case 7: // TYZ, same with the input case with the heat capacity in msp
 		// TYZ, heat capacity for ice freezing model 
         phi_i = 0.0; 
 
